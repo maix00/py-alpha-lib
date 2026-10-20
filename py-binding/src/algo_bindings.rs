@@ -3184,6 +3184,49 @@
       ta_ft_dynamic_mask(&ctx, r, input, starts, ends, period).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Stable ordering for backtest events: (timestamp, kind, sequence, push index).
+  #[pyfunction]
+  fn ft_event_order<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    timestamps: &'py Bound<'_, PyAny>,
+    kinds: &'py Bound<'_, PyAny>,
+    sequences: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, timestamps), kinds), sequences)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(timestamps.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(kinds.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(sequences.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let timestamps = timestamps.as_array();
+      let timestamps = timestamps.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let kinds = kinds.as_array();
+      let kinds = kinds.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let sequences = sequences.as_array();
+      let sequences = sequences.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_event_order(&ctx, r, timestamps, kinds, sequences).map_err(|e| e.into())
+    } else if let Some((((mut r, timestamps), kinds), sequences)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(timestamps.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(kinds.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(sequences.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let timestamps = timestamps.as_array();
+      let timestamps = timestamps.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let kinds = kinds.as_array();
+      let kinds = kinds.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let sequences = sequences.as_array();
+      let sequences = sequences.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_event_order(&ctx, r, timestamps, kinds, sequences).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Batch searchsorted-left over ragged sorted index arrays.
   #[pyfunction]
   fn ft_exec_positions<'py>(
@@ -9861,6 +9904,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_curve_pair, m)?)?;
   m.add_function(wrap_pyfunction!(ft_dynamic_arg, m)?)?;
   m.add_function(wrap_pyfunction!(ft_dynamic_mask, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_event_order, m)?)?;
   m.add_function(wrap_pyfunction!(ft_exec_positions, m)?)?;
   m.add_function(wrap_pyfunction!(ft_exec_schedule_ts, m)?)?;
   m.add_function(wrap_pyfunction!(ft_group, m)?)?;

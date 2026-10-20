@@ -330,6 +330,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_EVENT_ORDER",
+      lua.create_function(|lua, (timestamps, kinds, sequences): (NumArray, NumArray, NumArray)| {
+        let mut r = vec![0.0; timestamps.len()];
+        ta_ft_event_order::<f64>(&ctx(lua), &mut r, &timestamps, &kinds, &sequences)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_EXEC_POSITIONS",
       lua.create_function(|lua, (indices, offsets, query, _delay): (NumArray, NumArray, f64, usize)| {
         let mut r = vec![0.0; indices.len()];

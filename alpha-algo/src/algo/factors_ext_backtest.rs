@@ -110,3 +110,31 @@ pub fn ta_ft_exec_schedule_ts<NumT: Float + Send + Sync>(
   }
   Ok(())
 }
+
+/// Stable ordering for backtest events: (timestamp, kind, sequence, push index).
+///
+/// Output[i] is the original position of the i-th event in dispatch order.
+pub fn ta_ft_event_order<NumT: Float + Send + Sync>(
+  _ctx: &Context,
+  r: &mut [NumT],
+  timestamps: &[NumT],
+  kinds: &[NumT],
+  sequences: &[NumT],
+) -> Result<(), Error> {
+  if r.len() != timestamps.len() || r.len() != kinds.len() || r.len() != sequences.len() {
+    return Err(Error::LengthMismatch(r.len(), timestamps.len()));
+  }
+  let mut order: Vec<usize> = (0..timestamps.len()).collect();
+  order.sort_by(|&left, &right| {
+    timestamps[left]
+      .partial_cmp(&timestamps[right])
+      .unwrap_or(std::cmp::Ordering::Equal)
+      .then_with(|| kinds[left].partial_cmp(&kinds[right]).unwrap_or(std::cmp::Ordering::Equal))
+      .then_with(|| sequences[left].partial_cmp(&sequences[right]).unwrap_or(std::cmp::Ordering::Equal))
+      .then_with(|| left.cmp(&right))
+  });
+  for (position, original) in order.into_iter().enumerate() {
+    r[position] = NumT::from(original).unwrap();
+  }
+  Ok(())
+}

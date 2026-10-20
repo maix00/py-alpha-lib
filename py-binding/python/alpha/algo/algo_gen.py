@@ -852,6 +852,29 @@ def FT_DYNAMIC_MASK[A: np.ndarray | list[np.ndarray]](
     _algo.ft_dynamic_mask(r, input, starts, ends, period)
     return r
 
+def FT_EVENT_ORDER[A: np.ndarray | list[np.ndarray]](
+  timestamps: A, kinds: A, sequences: A
+) -> A:
+  """
+  Stable ordering for backtest events: (timestamp, kind, sequence, push index).
+  
+  Output[i] is the original position of the i-th event in dispatch order.
+  """
+  if isinstance(timestamps, list) and isinstance(kinds, list) and isinstance(sequences, list):
+    timestamps = [_to_f64(x) for x in timestamps]
+    kinds = [_to_f64(x) for x in kinds]
+    sequences = [_to_f64(x) for x in sequences]
+    r = [np.empty_like(x) for x in timestamps]
+    _algo.ft_event_order(r, timestamps, kinds, sequences)
+    return r
+  else:
+    timestamps = _to_f64(timestamps)
+    kinds = _to_f64(kinds)
+    sequences = _to_f64(sequences)
+    r = np.empty_like(timestamps)
+    _algo.ft_event_order(r, timestamps, kinds, sequences)
+    return r
+
 def FT_EXEC_POSITIONS[A: np.ndarray | list[np.ndarray]](
   indices: A, offsets: A, query: float, _delay: int
 ) -> A:
