@@ -118,6 +118,9 @@ fn roll_unary<NumT: Float + Send + Sync>(
             if acc.count < minimum {
               continue;
             }
+            if matches!(kind, NanRoll::Var | NanRoll::Std) && acc.count < 2 {
+              continue;
+            }
             let count = NumT::from(acc.count).unwrap();
             r[i] = match kind {
               NanRoll::Mean => acc.total() / count + anchor,
