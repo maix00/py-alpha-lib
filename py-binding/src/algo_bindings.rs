@@ -4200,6 +4200,66 @@
       } else { Err(PyValueError::new_err("invalid input list")) }
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Target-weight sizing: target = weight * equity / (price * multiplier).
+  #[pyfunction]
+  fn ft_target_quantities<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    prices: &'py Bound<'_, PyAny>,
+    multipliers: &'py Bound<'_, PyAny>,
+    weights: &'py Bound<'_, PyAny>,
+    current: &'py Bound<'_, PyAny>,
+    lot_sizes: &'py Bound<'_, PyAny>,
+    equity: f64,
+    round_policy: usize,
+    mode: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((((mut r, prices), multipliers), weights), current), lot_sizes)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(prices.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(multipliers.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(weights.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(current.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(lot_sizes.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let prices = prices.as_array();
+      let prices = prices.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let multipliers = multipliers.as_array();
+      let multipliers = multipliers.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let weights = weights.as_array();
+      let weights = weights.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let current = current.as_array();
+      let current = current.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lot_sizes = lot_sizes.as_array();
+      let lot_sizes = lot_sizes.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_target_quantities(&ctx, r, prices, multipliers, weights, current, lot_sizes, equity, round_policy, mode).map_err(|e| e.into())
+    } else if let Some((((((mut r, prices), multipliers), weights), current), lot_sizes)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(prices.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(multipliers.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(weights.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(current.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(lot_sizes.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let prices = prices.as_array();
+      let prices = prices.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let multipliers = multipliers.as_array();
+      let multipliers = multipliers.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let weights = weights.as_array();
+      let weights = weights.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let current = current.as_array();
+      let current = current.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lot_sizes = lot_sizes.as_array();
+      let lot_sizes = lot_sizes.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_target_quantities(&ctx, r, prices, multipliers, weights, current, lot_sizes, equity as f32, round_policy, mode).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Cross-sectional z-score with sample standard deviation (ddof=1).
   #[pyfunction]
   fn ft_zscore<'py>(
@@ -10074,6 +10134,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_scope_agg, m)?)?;
   m.add_function(wrap_pyfunction!(ft_scope_trunc, m)?)?;
   m.add_function(wrap_pyfunction!(ft_spearman, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_target_quantities, m)?)?;
   m.add_function(wrap_pyfunction!(ft_zscore, m)?)?;
   m.add_function(wrap_pyfunction!(fw_split, m)?)?;
   m.add_function(wrap_pyfunction!(fw_split_factor, m)?)?;

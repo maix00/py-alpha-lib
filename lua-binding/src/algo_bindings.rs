@@ -450,6 +450,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_TARGET_QUANTITIES",
+      lua.create_function(|lua, (prices, multipliers, weights, current, lot_sizes, equity, round_policy, mode): (NumArray, NumArray, NumArray, NumArray, NumArray, f64, usize, usize)| {
+        let mut r = vec![0.0; prices.len()];
+        ta_ft_target_quantities::<f64>(&ctx(lua), &mut r, &prices, &multipliers, &weights, &current, &lot_sizes, equity, round_policy, mode)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_ZSCORE",
       lua.create_function(|lua, (input,): (NumArray,)| {
         let mut r = vec![0.0; input.len()];

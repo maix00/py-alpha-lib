@@ -1179,6 +1179,33 @@ def FT_SPEARMAN[A: np.ndarray | list[np.ndarray]](
     _algo.ft_spearman(r, left, right)
     return r
 
+def FT_TARGET_QUANTITIES[A: np.ndarray | list[np.ndarray]](
+  prices: A, multipliers: A, weights: A, current: A, lot_sizes: A, equity: float, round_policy: int, mode: int
+) -> A:
+  """
+  Target-weight sizing: target = weight * equity / (price * multiplier).
+  
+  mode 0 = raw target, 1 = delta target-current, 2 = delta rounded to lot.
+  """
+  if isinstance(prices, list) and isinstance(multipliers, list) and isinstance(weights, list) and isinstance(current, list) and isinstance(lot_sizes, list):
+    prices = [_to_f64(x) for x in prices]
+    multipliers = [_to_f64(x) for x in multipliers]
+    weights = [_to_f64(x) for x in weights]
+    current = [_to_f64(x) for x in current]
+    lot_sizes = [_to_f64(x) for x in lot_sizes]
+    r = [np.empty_like(x) for x in prices]
+    _algo.ft_target_quantities(r, prices, multipliers, weights, current, lot_sizes, equity, round_policy, mode)
+    return r
+  else:
+    prices = _to_f64(prices)
+    multipliers = _to_f64(multipliers)
+    weights = _to_f64(weights)
+    current = _to_f64(current)
+    lot_sizes = _to_f64(lot_sizes)
+    r = np.empty_like(prices)
+    _algo.ft_target_quantities(r, prices, multipliers, weights, current, lot_sizes, equity, round_policy, mode)
+    return r
+
 def FT_ZSCORE[A: np.ndarray | list[np.ndarray]](
   input: A
 ) -> A:

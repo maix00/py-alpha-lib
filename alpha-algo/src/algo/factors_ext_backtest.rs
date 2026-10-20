@@ -229,3 +229,41 @@ pub fn ta_ft_average_cost_chain<NumT: Float + Send + Sync>(
   }
   Ok(())
 }
+
+/// Target-weight sizing: target = weight * equity / (price * multiplier).
+///
+/// mode 0 = raw target, 1 = delta target-current, 2 = delta rounded to lot.
+pub fn ta_ft_target_quantities<NumT: Float + Send + Sync>(
+  _ctx: &Context,
+  r: &mut [NumT],
+  prices: &[NumT],
+  multipliers: &[NumT],
+  weights: &[NumT],
+  current: &[NumT],
+  lot_sizes: &[NumT],
+  equity: NumT,
+  round_policy: usize,
+  mode: usize,
+) -> Result<(), Error> {
+  let length = prices.len();
+  if multipliers.len() != length || weights.len() != length || current.len() != length || lot_sizes.len() != length || r.len() != length {
+    return Err(Error::LengthMismatch(r.len(), length));
+  }
+  for index in 0..length {
+    let denominator = prices[index] * multipliers[index];
+    let target = if denominator == NumT::zero() {
+      NumT::zero()
+    } else {
+      weights[index] * equity / denominator
+    };
+    let delta = target - current[index];
+    let lot = if lot_sizes[index] > NumT::zero() { lot_sizes[index] } else { NumT::one() };
+    let rounded = match round_policy {
+      1 => (delta / lot).round() * lot,
+      2 => (delta / lot).ceil() * lot,
+      _ => (delta / lot).floor() * lot,
+    };
+    r[index] = match mode { 0 => target, 1 => delta, 2 => rounded, _ => NumT::nan() };
+  }
+  Ok(())
+}
