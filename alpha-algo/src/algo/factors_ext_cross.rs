@@ -274,74 +274,40 @@ fn pair_stat<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(left.len(), ctx.groups());
-  let mut left_buf = vec![NumT::nan(); groups * rows];
-  let mut right_buf = vec![NumT::nan(); groups * rows];
-  for g in 0..groups {
-    for t in 0..rows {
-      left_buf[t * groups + g] = left[g * rows + t];
-      right_buf[t * groups + g] = right[g * rows + t];
+  for t in 0..rows {
+    let (xs, ys, positions) = pair_rows(rows, groups, left, right, t, rank);
+    let n = xs.len();
+    if n < 2 {
+      continue;
     }
-  }
-  use rayon::prelude::*;
-  left_buf
-    .par_chunks_mut(groups)
-    .zip(right_buf.par_chunks(groups))
-    .for_each(|(lrow, rrow)| {
-      let mut xs: Vec<NumT> = Vec::with_capacity(groups);
-      let mut ys: Vec<NumT> = Vec::with_capacity(groups);
-      let mut positions: Vec<usize> = Vec::with_capacity(groups);
-      for g in 0..groups {
-        let x = lrow[g];
-        let y = rrow[g];
-        if is_normal(&x) && is_normal(&y) {
-          xs.push(x);
-          ys.push(y);
-          positions.push(g);
-        }
-      }
-      let n = xs.len();
-      if n < 2 {
-        return;
-      }
-      if rank {
-        let (_, rx) = average_ranks(&xs);
-        let (_, ry) = average_ranks(&ys);
-        xs = rx;
-        ys = ry;
-      }
-      let count = NumT::from(n).unwrap();
-      let mut sx = NumT::zero();
-      let mut sy = NumT::zero();
-      let mut sxx = NumT::zero();
-      let mut syy = NumT::zero();
-      let mut sxy = NumT::zero();
-      for i in 0..n {
-        sx = sx + xs[i];
-        sy = sy + ys[i];
-        sxx = sxx + xs[i] * xs[i];
-        syy = syy + ys[i] * ys[i];
-        sxy = sxy + xs[i] * ys[i];
-      }
-      if !correlation {
-        let value = (sxy - sx * sy / count) / (count - NumT::one());
-        for position in &positions {
-          lrow[*position] = value;
-        }
-        return;
-      }
-      let var_x = sxx - sx * sx / count;
-      let var_y = syy - sy * sy / count;
-      if !(var_x > NumT::zero()) || !(var_y > NumT::zero()) {
-        return;
-      }
-      let value = (sxy - sx * sy / count) / (var_x * var_y).sqrt();
+    let count = NumT::from(n).unwrap();
+    let mut sx = NumT::zero();
+    let mut sy = NumT::zero();
+    let mut sxx = NumT::zero();
+    let mut syy = NumT::zero();
+    let mut sxy = NumT::zero();
+    for i in 0..n {
+      sx = sx + xs[i];
+      sy = sy + ys[i];
+      sxx = sxx + xs[i] * xs[i];
+      syy = syy + ys[i] * ys[i];
+      sxy = sxy + xs[i] * ys[i];
+    }
+    let covariance = (sxy - sx * sy / count) / (count - NumT::one());
+    if !correlation {
       for position in &positions {
-        lrow[*position] = value;
+        r[*position] = covariance;
       }
-    });
-  for g in 0..groups {
-    for t in 0..rows {
-      r[g * rows + t] = left_buf[t * groups + g];
+      continue;
+    }
+    let var_x = sxx - sx * sx / count;
+    let var_y = syy - sy * sy / count;
+    if !(var_x > NumT::zero()) || !(var_y > NumT::zero()) {
+      continue;
+    }
+    let value = (sxy - sx * sy / count) / (var_x * var_y).sqrt();
+    for position in &positions {
+      r[*position] = value;
     }
   }
   Ok(())
