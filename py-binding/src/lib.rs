@@ -190,7 +190,7 @@ impl OrderCore {
   }
 
   fn apply_fill(&mut self, quantity: f64, price: f64) -> f64 {
-    if self.status != 0 {
+    if self.status != 0 && self.status != 4 {
       return 0.0;
     }
     let remaining = (self.quantity - self.filled).max(0.0);
@@ -202,6 +202,8 @@ impl OrderCore {
       if self.filled >= self.quantity - 1e-12 {
         self.filled = self.quantity;
         self.status = 1;
+      } else {
+        self.status = 4;
       }
     }
     fill
