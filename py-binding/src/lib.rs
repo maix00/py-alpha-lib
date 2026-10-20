@@ -175,6 +175,32 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct MarginAccount {
+  reserved: f64,
+  by_product: std::collections::HashMap<String, f64>,
+}
+
+#[pymethods]
+impl MarginAccount {
+  #[new]
+  fn new() -> Self { Self { reserved: 0.0, by_product: std::collections::HashMap::new() } }
+
+  fn update(&mut self, product: &str, quantity: f64, price: f64, multiplier: f64, ratio: f64) -> f64 {
+    let margin = quantity.abs() * price * multiplier * ratio;
+    let previous = self.by_product.insert(product.to_string(), margin).unwrap_or(0.0);
+    self.reserved += margin - previous;
+    margin
+  }
+
+  #[getter]
+  fn reserved(&self) -> f64 { self.reserved }
+
+  fn product_margin(&self, product: &str) -> f64 {
+    self.by_product.get(product).copied().unwrap_or(0.0)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct OrderCore {
   quantity: f64,
   filled: f64,
@@ -512,6 +538,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<MarketDataMatrix>()?;
   m.add_class::<LedgerAccount>()?;
   m.add_class::<OrderCore>()?;
+  m.add_class::<MarginAccount>()?;
   register_functions(m)?;
   Ok(())
 }
