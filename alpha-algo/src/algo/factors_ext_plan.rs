@@ -27,6 +27,7 @@ use crate::algo::{
 
 pub const PLAN_FILL: usize = 2;
 pub const PLAN_FUSED: usize = 90;
+pub const PLAN_WHERE: usize = 27;
 pub const PLAN_SCOPE: usize = 80;
 pub const PLAN_SHIFT: usize = 1;
 
@@ -189,6 +190,34 @@ fn binary_loop<NumT: Float, F: Fn(NumT, NumT) -> NumT>(
     }
     (PlanOperand::Scalar(left), PlanOperand::Scalar(right)) => {
       out.fill(operation(*left, *right));
+    }
+  }
+}
+
+fn plan_where<NumT: Float>(
+  out: &mut [NumT],
+  condition: &PlanOperand<'_, NumT>,
+  true_value: &PlanOperand<'_, NumT>,
+  false_value: &PlanOperand<'_, NumT>,
+) {
+  match (condition, true_value, false_value) {
+    (PlanOperand::Slot(cond), PlanOperand::Slot(left), PlanOperand::Slot(right)) => {
+      for index in 0..out.len() {
+        out[index] = if cond[index] != NumT::zero() {
+          left[index]
+        } else {
+          right[index]
+        };
+      }
+    }
+    _ => {
+      for index in 0..out.len() {
+        out[index] = if condition.at(index) != NumT::zero() {
+          true_value.at(index)
+        } else {
+          false_value.at(index)
+        };
+      }
     }
   }
 }
@@ -577,7 +606,14 @@ pub fn ta_ft_run_plan<NumT: Float + Send + Sync>(
       plan_shift(out, a.slot()?, groups, rows, periods)?;
     } else if (PLAN_NEG..=PLAN_NOT).contains(&code) {
       plan_unary(code, out, &a)?;
-    } else if (PLAN_ADD..=PLAN_MIN).contains(&code) || (PLAN_GT..=PLAN_OR).contains(&code) {
+    } else if code == PLAN_WHERE {
+      let when_true = c.ok_or_else(|| {
+        Error::InvalidParameter("where needs a third operand slot".into())
+      })?;
+      plan_where(out, &a, &b, &PlanOperand::Slot(when_true));
+    } else if (PLAN_ADD..=PLAN_MIN).contains(&code)
+      || (PLAN_GT..=PLAN_OR).contains(&code)
+    {
       plan_binary(code, out, &a, &b)?;
     } else if code == PLAN_SCOPE {
       ta_ft_scope_agg(ctx, out, a.slot()?, aux_slice, min_count, window, quantile)?;
