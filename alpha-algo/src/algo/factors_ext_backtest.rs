@@ -138,3 +138,39 @@ pub fn ta_ft_event_order<NumT: Float + Send + Sync>(
   }
   Ok(())
 }
+
+/// Bar visibility timestamps relative to the first bar.
+///
+/// ``indices`` are nanosecond offsets from the first bar.  ``open_basis``
+/// selects next-bar OPEN visibility; otherwise bar-end visibility applies.
+pub fn ta_ft_bar_visibility<NumT: Float + Send + Sync>(
+  _ctx: &Context,
+  r: &mut [NumT],
+  indices: &[NumT],
+  open_basis: usize,
+  open_delay: NumT,
+  end_delay: NumT,
+  freq: NumT,
+) -> Result<(), Error> {
+  if r.len() != indices.len() {
+    return Err(Error::LengthMismatch(r.len(), indices.len()));
+  }
+  for position in 0..indices.len() {
+    r[position] = if open_basis != 0 {
+      if position == 0 {
+        NumT::nan()
+      } else {
+        let previous = indices[position - 1] + open_delay;
+        let bar_open = if freq > NumT::zero() {
+          indices[position] - freq + open_delay
+        } else {
+          previous
+        };
+        if previous > bar_open { previous } else { bar_open }
+      }
+    } else {
+      indices[position] + end_delay
+    };
+  }
+  Ok(())
+}

@@ -720,6 +720,26 @@ def FRET[A: np.ndarray | list[np.ndarray]](
     _algo.fret(r, open, close, is_calc, delay, periods)
     return r
 
+def FT_BAR_VISIBILITY[A: np.ndarray | list[np.ndarray]](
+  indices: A, open_basis: int, open_delay: float, end_delay: float, freq: float
+) -> A:
+  """
+  Bar visibility timestamps relative to the first bar.
+  
+  ``indices`` are nanosecond offsets from the first bar.  ``open_basis``
+  selects next-bar OPEN visibility; otherwise bar-end visibility applies.
+  """
+  if isinstance(indices, list):
+    indices = [_to_f64(x) for x in indices]
+    r = [np.empty_like(x) for x in indices]
+    _algo.ft_bar_visibility(r, indices, open_basis, open_delay, end_delay, freq)
+    return r
+  else:
+    indices = _to_f64(indices)
+    r = np.empty_like(indices)
+    _algo.ft_bar_visibility(r, indices, open_basis, open_delay, end_delay, freq)
+    return r
+
 def FT_CORR[A: np.ndarray | list[np.ndarray]](
   left: A, right: A
 ) -> A:

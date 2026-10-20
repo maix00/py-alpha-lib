@@ -2860,6 +2860,115 @@
       ta_fret(&ctx, r, open, close, is_calc, delay, periods).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Bar visibility timestamps relative to the first bar.
+  #[pyfunction]
+  fn ft_bar_visibility<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    indices: &'py Bound<'_, PyAny>,
+    open_basis: usize,
+    open_delay: f64,
+    end_delay: f64,
+    freq: f64,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, indices)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(indices.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let indices = indices.as_array();
+      let indices = indices
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_bar_visibility(&ctx, r, indices, open_basis, open_delay, end_delay, freq).map_err(|e| e.into())
+    } else if let Some((mut r, indices)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(indices.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let indices = indices.as_array();
+      let indices = indices
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_ft_bar_visibility(&ctx, r, indices, open_basis, open_delay as f32, end_delay as f32, freq as f32).map_err(|e| e.into())
+    } else if let Some((r, indices)) = r.cast::<PyList>().ok().zip(indices.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != indices.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, indices)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(indices.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let indices = indices.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(indices.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let indices = input.as_slice();
+            if let Some((r, indices)) = r.zip(indices) {
+              ta_ft_bar_visibility(&ctx, r, indices, open_basis, open_delay, end_delay, freq).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, indices)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(indices.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let indices = indices.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(indices.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let indices = input.as_slice();
+            if let Some((r, indices)) = r.zip(indices) {
+              ta_ft_bar_visibility(&ctx, r, indices, open_basis, open_delay as f32, end_delay as f32, freq as f32).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
   /// Cross-sectional Pearson correlation per timestamp.
   #[pyfunction]
   fn ft_corr<'py>(
@@ -9898,6 +10007,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(entropy, m)?)?;
   m.add_function(wrap_pyfunction!(filter, m)?)?;
   m.add_function(wrap_pyfunction!(fret, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_bar_visibility, m)?)?;
   m.add_function(wrap_pyfunction!(ft_corr, m)?)?;
   m.add_function(wrap_pyfunction!(ft_cov, m)?)?;
   m.add_function(wrap_pyfunction!(ft_curve_fit, m)?)?;
