@@ -175,6 +175,68 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct MarketDataMatrix {
+  timestamps: Vec<i64>,
+  values: Vec<f64>,
+  rows: usize,
+  columns: usize,
+  labels: Vec<Py<PyAny>>,
+}
+
+#[pymethods]
+impl MarketDataMatrix {
+  #[new]
+  fn new(
+    py: Python<'_>,
+    timestamps: numpy::PyReadonlyArray1<'_, i64>,
+    values: numpy::PyReadonlyArray2<'_, f64>,
+    labels: Vec<Py<PyAny>>,
+  ) -> PyResult<Self> {
+    let timestamps = timestamps.as_slice()?.to_vec();
+    let array = values.as_array();
+    let (rows, columns) = array.dim();
+    if labels.len() != columns {
+      return Err(pyo3::exceptions::PyValueError::new_err("label count mismatch"));
+    }
+    let values = array.iter().copied().collect::<Vec<f64>>();
+    Ok(Self { timestamps, values, rows, columns, labels })
+  }
+
+  fn row_at(&self, py: Python<'_>, timestamp: i64, asof: bool) -> PyResult<Py<PyAny>> {
+    let dict = pyo3::types::PyDict::new(py);
+    let position = if asof {
+      match self.timestamps.binary_search(&timestamp) {
+        Ok(index) => index as isize,
+        Err(0) => -1,
+        Err(index) => index as isize - 1,
+      }
+    } else {
+      match self.timestamps.binary_search(&timestamp) {
+        Ok(index) => index as isize,
+        Err(_) => -1,
+      }
+    };
+    if position < 0 || position as usize >= self.rows {
+      return Ok(dict.into());
+    }
+    let row = position as usize;
+    for column in 0..self.columns {
+      let value = self.values[row * self.columns + column];
+      if !value.is_nan() {
+        dict.set_item(self.labels[column].clone_ref(py), value)?;
+      }
+    }
+    Ok(dict.into())
+  }
+
+  #[getter]
+  fn rows(&self) -> usize { self.rows }
+
+  #[getter]
+  fn columns(&self) -> usize { self.columns }
+}
+
+#[pyclass(unsendable)]
 pub struct EventHeap {
   heap: std::cell::RefCell<std::collections::BinaryHeap<std::cmp::Reverse<EventHeapEntry>>>,
   counter: std::cell::Cell<u64>,
@@ -292,6 +354,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ema, m)?)?;
   m.add_function(wrap_pyfunction!(set_ctx, m)?)?;
   m.add_class::<EventHeap>()?;
+  m.add_class::<MarketDataMatrix>()?;
   register_functions(m)?;
   Ok(())
 }
