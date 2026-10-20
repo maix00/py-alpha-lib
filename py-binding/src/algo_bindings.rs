@@ -3258,6 +3258,84 @@
       } else { Err(PyValueError::new_err("invalid input list")) }
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Batch execution timestamp resolution for ragged sorted index arrays.
+  #[pyfunction]
+  fn ft_exec_schedule_ts<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    indices: &'py Bound<'_, PyAny>,
+    offsets: &'py Bound<'_, PyAny>,
+    delay: usize,
+    freq: f64,
+    open_delay: f64,
+    end_delay: f64,
+    open_basis: usize,
+    mode: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, indices), offsets)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(indices.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(offsets.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let indices = indices.as_array();
+      let indices = indices.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let offsets = offsets.as_array();
+      let offsets = offsets.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_exec_schedule_ts(&ctx, r, indices, offsets, delay, freq, open_delay, end_delay, open_basis, mode).map_err(|e| e.into())
+    } else if let Some(((mut r, indices), offsets)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(indices.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(offsets.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let indices = indices.as_array();
+      let indices = indices.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let offsets = offsets.as_array();
+      let offsets = offsets.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_exec_schedule_ts(&ctx, r, indices, offsets, delay, freq as f32, open_delay as f32, end_delay as f32, open_basis, mode).map_err(|e| e.into())
+    } else if let Some(((r, indices), offsets)) = r.cast::<PyList>().ok().zip(indices.cast::<PyList>().ok()).zip(offsets.cast::<PyList>().ok()) {
+      if r.len() != indices.len() || offsets.len() != indices.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, indices), offsets)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(indices.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(offsets.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let indices = indices.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let offsets = offsets.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(indices.into_par_iter()).zip(offsets.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let indices = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let offsets = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_exec_schedule_ts(&ctx, r, indices, offsets, delay, freq, open_delay, end_delay, open_basis, mode).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, indices), offsets)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(indices.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(offsets.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let indices = indices.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let offsets = offsets.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(indices.into_par_iter()).zip(offsets.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let indices = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let offsets = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_exec_schedule_ts(&ctx, r, indices, offsets, delay, freq as f32, open_delay as f32, end_delay as f32, open_basis, mode).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Category-partitioned cross-sectional transform: 0 = rank, 1 = z-score,
   #[pyfunction]
   fn ft_group<'py>(
@@ -9784,6 +9862,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_dynamic_arg, m)?)?;
   m.add_function(wrap_pyfunction!(ft_dynamic_mask, m)?)?;
   m.add_function(wrap_pyfunction!(ft_exec_positions, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_exec_schedule_ts, m)?)?;
   m.add_function(wrap_pyfunction!(ft_group, m)?)?;
   m.add_function(wrap_pyfunction!(ft_group_reduce, m)?)?;
   m.add_function(wrap_pyfunction!(ft_ordinal_rank, m)?)?;

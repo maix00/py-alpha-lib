@@ -338,6 +338,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_EXEC_SCHEDULE_TS",
+      lua.create_function(|lua, (indices, offsets, delay, freq, open_delay, end_delay, open_basis, mode): (NumArray, NumArray, usize, f64, f64, f64, usize, usize)| {
+        let mut r = vec![0.0; indices.len()];
+        ta_ft_exec_schedule_ts::<f64>(&ctx(lua), &mut r, &indices, &offsets, delay, freq, open_delay, end_delay, open_basis, mode)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_GROUP",
       lua.create_function(|lua, (input, mask, category, op): (NumArray, NumArray, NumArray, usize)| {
         let mut r = vec![0.0; input.len()];

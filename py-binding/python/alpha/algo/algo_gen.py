@@ -876,6 +876,28 @@ def FT_EXEC_POSITIONS[A: np.ndarray | list[np.ndarray]](
     _algo.ft_exec_positions(r, indices, offsets, query, _delay)
     return r
 
+def FT_EXEC_SCHEDULE_TS[A: np.ndarray | list[np.ndarray]](
+  indices: A, offsets: A, delay: int, freq: float, open_delay: float, end_delay: float, open_basis: int, mode: int
+) -> A:
+  """
+  Batch execution timestamp resolution for ragged sorted index arrays.
+  
+  ``indices``/``offsets`` are relative-ns ragged arrays (query = 0).
+  ``mode`` 0 returns the price timestamp, 1 the visibility timestamp.
+  """
+  if isinstance(indices, list) and isinstance(offsets, list):
+    indices = [_to_f64(x) for x in indices]
+    offsets = [_to_f64(x) for x in offsets]
+    r = [np.empty_like(x) for x in indices]
+    _algo.ft_exec_schedule_ts(r, indices, offsets, delay, freq, open_delay, end_delay, open_basis, mode)
+    return r
+  else:
+    indices = _to_f64(indices)
+    offsets = _to_f64(offsets)
+    r = np.empty_like(indices)
+    _algo.ft_exec_schedule_ts(r, indices, offsets, delay, freq, open_delay, end_delay, open_basis, mode)
+    return r
+
 def FT_GROUP[A: np.ndarray | list[np.ndarray]](
   input: A, mask: A, category: A, op: int
 ) -> A:
