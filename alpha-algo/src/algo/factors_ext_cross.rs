@@ -75,6 +75,9 @@ pub fn ta_ft_rank<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
+  if groups == 0 || rows == 0 {
+    return Ok(());
+  }
   // 转成 (T, N) 连续布局后按时间步并行：每个时间步只写自己那一行，无锁。
   let mut buffer = vec![NumT::nan(); groups * rows];
   for g in 0..groups {
@@ -119,25 +122,22 @@ pub fn ta_ft_rank_masked<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
-  let mut values_buf = vec![NumT::nan(); groups * rows];
-  let mut mask_buf = vec![NumT::zero(); groups * rows];
-  for g in 0..groups {
-    for t in 0..rows {
-      values_buf[t * groups + g] = input[g * rows + t];
-      mask_buf[t * groups + g] = mask[g * rows + t];
-    }
+  if groups == 0 || rows == 0 {
+    return Ok(());
   }
+  let mut out_buf = vec![NumT::nan(); groups * rows];
   use rayon::prelude::*;
-  values_buf
+  out_buf
     .par_chunks_mut(groups)
-    .zip(mask_buf.par_chunks(groups))
-    .for_each(|(row, mask_row)| {
+    .enumerate()
+    .for_each(|(t, out_row)| {
       let mut values = Vec::with_capacity(groups);
       let mut positions = Vec::with_capacity(groups);
       for g in 0..groups {
-        let v = row[g];
-        if is_normal(&v) && mask_row[g] > NumT::zero() {
-          values.push(v);
+        let index = g * rows + t;
+        let value = input[index];
+        if is_normal(&value) && mask[index] > NumT::zero() {
+          values.push(value);
           positions.push(g);
         }
       }
@@ -147,14 +147,10 @@ pub fn ta_ft_rank_masked<NumT: Float + Send + Sync>(
       let (_, ranks) = average_ranks(&values);
       let count = NumT::from(values.len()).unwrap();
       for (index, g) in positions.iter().enumerate() {
-        row[*g] = ranks[index] / count - NumT::from(0.5).unwrap();
+        out_row[*g] = ranks[index] / count - NumT::from(0.5).unwrap();
       }
     });
-  for g in 0..groups {
-    for t in 0..rows {
-      r[g * rows + t] = values_buf[t * groups + g];
-    }
-  }
+  from_rows(&out_buf, r, groups, rows);
   Ok(())
 }
 
@@ -227,6 +223,9 @@ pub fn ta_ft_zscore<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
+  if groups == 0 || rows == 0 {
+    return Ok(());
+  }
   let mut buffer = vec![NumT::nan(); groups * rows];
   for g in 0..groups {
     for t in 0..rows {
@@ -249,9 +248,10 @@ pub fn ta_ft_zscore<NumT: Float + Send + Sync>(
     let n = NumT::from(count).unwrap();
     let mean = sum / n;
     if count == 1 {
+      // pandas 在只有一个有效观测时 std(ddof=1) 为 NaN，z-score 整行为 NaN。
       for value in row.iter_mut() {
         if is_normal(value) {
-          *value = NumT::zero();
+          *value = NumT::nan();
         }
       }
       return;
@@ -264,6 +264,16 @@ pub fn ta_ft_zscore<NumT: Float + Send + Sync>(
       }
     }
     let std = (m2 / (n - NumT::one())).sqrt();
+    if std.is_nan() {
+      // 行内出现 ±inf 时 pandas 的 mean/std 都是 inf/NaN，整行结果为 NaN；
+      // buffer 里存的是输入值，必须显式抹成 NaN。
+      for value in row.iter_mut() {
+        if is_normal(value) {
+          *value = NumT::nan();
+        }
+      }
+      return;
+    }
     for value in row.iter_mut() {
       if is_normal(value) {
         *value = if std > NumT::zero() { (*value - mean) / std } else { NumT::zero() };
@@ -458,20 +468,20 @@ pub fn ta_ft_group<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
-  let mut values_buf = vec![NumT::nan(); groups * rows];
-  let mut mask_buf = vec![NumT::zero(); groups * rows];
-  for g in 0..groups {
-    for t in 0..rows {
-      values_buf[t * groups + g] = input[g * rows + t];
-      mask_buf[t * groups + g] = mask[g * rows + t];
-    }
+  if groups == 0 || rows == 0 {
+    return Ok(());
   }
-  let max_id = category.iter().map(|v| v.to_usize().unwrap_or(0)).max().unwrap_or(0);
+  let max_id = category
+    .iter()
+    .map(|v| v.to_usize().unwrap_or(0))
+    .max()
+    .unwrap_or(0);
+  let mut out_buf = vec![NumT::nan(); groups * rows];
   use rayon::prelude::*;
-  values_buf
+  out_buf
     .par_chunks_mut(groups)
-    .zip(mask_buf.par_chunks(groups))
-    .for_each(|(row, mask_row)| {
+    .enumerate()
+    .for_each(|(t, row)| {
       for id in 0..=max_id {
         let mut values = Vec::new();
         let mut positions = Vec::new();
@@ -479,9 +489,10 @@ pub fn ta_ft_group<NumT: Float + Send + Sync>(
           if category[g].to_usize().unwrap_or(usize::MAX) != id {
             continue;
           }
-          let v = row[g];
-          if is_normal(&v) && mask_row[g] > NumT::zero() {
-            values.push(v);
+          let index = g * rows + t;
+          let value = input[index];
+          if is_normal(&value) && mask[index] > NumT::zero() {
+            values.push(value);
             positions.push(g);
           }
         }
@@ -508,6 +519,10 @@ pub fn ta_ft_group<NumT: Float + Send + Sync>(
               m2 = m2 + d * d;
             }
             let std = (m2 / (count - NumT::one())).sqrt();
+            if std.is_nan() {
+              // 组内含 ±inf：pandas 的组均值/标准差为 inf/NaN，整组 NaN。
+              continue;
+            }
             for (i, position) in positions.iter().enumerate() {
               row[*position] = if std > NumT::zero() {
                 (values[i] - mean) / std
@@ -526,11 +541,7 @@ pub fn ta_ft_group<NumT: Float + Send + Sync>(
         }
       }
     });
-  for g in 0..groups {
-    for t in 0..rows {
-      r[g * rows + t] = values_buf[t * groups + g];
-    }
-  }
+  from_rows(&out_buf, r, groups, rows);
   Ok(())
 }
 
