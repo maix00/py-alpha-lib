@@ -176,8 +176,8 @@ mod algo_impl {
 
 #[pyclass(unsendable)]
 pub struct EventHeap {
-  heap: std::collections::BinaryHeap<std::cmp::Reverse<EventHeapEntry>>,
-  counter: u64,
+  heap: std::cell::RefCell<std::collections::BinaryHeap<std::cmp::Reverse<EventHeapEntry>>>,
+  counter: std::cell::Cell<u64>,
 }
 
 struct EventHeapEntry {
@@ -211,38 +211,44 @@ impl Ord for EventHeapEntry {
 impl EventHeap {
   #[new]
   fn new() -> Self {
-    Self { heap: std::collections::BinaryHeap::new(), counter: 0 }
-  }
-
-  fn push(&mut self, timestamp: i64, kind: i32, sequence: i32, payload: Py<PyAny>) {
-    let counter = self.counter;
-    self.counter += 1;
-    self.heap.push(std::cmp::Reverse(EventHeapEntry {
-      timestamp, kind, sequence, counter, payload,
-    }));
-  }
-
-  fn push_with_counter(&mut self, timestamp: i64, kind: i32, sequence: i32, counter: u64, payload: Py<PyAny>) {
-    self.heap.push(std::cmp::Reverse(EventHeapEntry {
-      timestamp, kind, sequence, counter, payload,
-    }));
-    if counter >= self.counter {
-      self.counter = counter + 1;
+    Self {
+      heap: std::cell::RefCell::new(std::collections::BinaryHeap::new()),
+      counter: std::cell::Cell::new(0),
     }
   }
 
-  fn pop(&mut self, py: Python<'_>) -> Option<(i64, i32, i32, u64, Py<PyAny>)> {
-    self.heap.pop().map(|std::cmp::Reverse(entry)| {
+  fn push(&self, timestamp: i64, kind: i32, sequence: i32, payload: Py<PyAny>) {
+    let counter = self.counter.get();
+    self.counter.set(counter + 1);
+    self.heap.borrow_mut().push(std::cmp::Reverse(EventHeapEntry {
+      timestamp, kind, sequence, counter, payload,
+    }));
+  }
+
+  fn push_with_counter(&self, timestamp: i64, kind: i32, sequence: i32, counter: u64, payload: Py<PyAny>) {
+    self.heap.borrow_mut().push(std::cmp::Reverse(EventHeapEntry {
+      timestamp, kind, sequence, counter, payload,
+    }));
+    if counter >= self.counter.get() {
+      self.counter.set(counter + 1);
+    }
+  }
+
+  fn pop(&self, py: Python<'_>) -> Option<(i64, i32, i32, u64, Py<PyAny>)> {
+    self.heap.borrow_mut().pop().map(|std::cmp::Reverse(entry)| {
       (entry.timestamp, entry.kind, entry.sequence, entry.counter, entry.payload.clone_ref(py))
     })
   }
 
-  fn pop_batch(&mut self, py: Python<'_>) -> Option<(i32, Vec<Py<PyAny>>)> {
+  fn pop_batch(&self, py: Python<'_>) -> Option<(i32, Vec<Py<PyAny>>)> {
     let first = self.pop(py)?;
     let (first_ts, first_kind, _sequence, _counter, first_payload) = first;
     let mut batch = vec![first_payload];
-    while let Some(std::cmp::Reverse(entry)) = self.heap.peek() {
-      if entry.timestamp != first_ts || entry.kind != first_kind {
+    loop {
+      let same = self.heap.borrow().peek().map(|std::cmp::Reverse(entry)| {
+        entry.timestamp == first_ts && entry.kind == first_kind
+      }).unwrap_or(false);
+      if !same {
         break;
       }
       let next = self.pop(py)?;
@@ -252,14 +258,28 @@ impl EventHeap {
   }
 
   fn peek_key(&self) -> Option<(i64, i32, i32, u64)> {
-    self.heap.peek().map(|std::cmp::Reverse(entry)| {
+    self.heap.borrow().peek().map(|std::cmp::Reverse(entry)| {
       (entry.timestamp, entry.kind, entry.sequence, entry.counter)
     })
   }
 
   #[getter]
   fn len(&self) -> usize {
-    self.heap.len()
+    self.heap.borrow().len()
+  }
+
+  fn run(&self, py: Python<'_>, callback: &Bound<'_, PyAny>) -> PyResult<()> {
+    use pyo3::types::PyList;
+    loop {
+      let entry = {
+        let batch = self.pop_batch(py);
+        batch
+      };
+      let Some((kind, items)) = entry else { break };
+      let list = PyList::new(py, items)?;
+      callback.call1((kind, list))?;
+    }
+    Ok(())
   }
 }
 
