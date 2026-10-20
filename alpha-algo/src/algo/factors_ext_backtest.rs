@@ -174,3 +174,58 @@ pub fn ta_ft_bar_visibility<NumT: Float + Send + Sync>(
   }
   Ok(())
 }
+
+/// Sequential average-cost fill chain.
+///
+/// Output mode 0 = running quantity after each fill, 1 = average cost,
+/// 2 = realized pnl.  One call handles an entire same-product fill batch.
+pub fn ta_ft_average_cost_chain<NumT: Float + Send + Sync>(
+  _ctx: &Context,
+  r: &mut [NumT],
+  fill_qty: &[NumT],
+  price: &[NumT],
+  multiplier: &[NumT],
+  prior_qty: NumT,
+  prior_cost: NumT,
+  mode: usize,
+) -> Result<(), Error> {
+  if r.len() != fill_qty.len()
+    || r.len() != price.len()
+    || r.len() != multiplier.len()
+  {
+    return Err(Error::LengthMismatch(r.len(), fill_qty.len()));
+  }
+  let epsilon = NumT::from(1e-12).unwrap();
+  let mut quantity = prior_qty;
+  let mut cost = prior_cost;
+  for index in 0..r.len() {
+    let fill = fill_qty[index];
+    let fill_price = price[index];
+    let scale = multiplier[index];
+    let new_quantity = quantity + fill;
+    let mut realized = NumT::zero();
+    if quantity == NumT::zero() || (quantity > NumT::zero()) == (fill > NumT::zero()) {
+      cost = if new_quantity.abs() <= epsilon {
+        NumT::zero()
+      } else {
+        (quantity * cost + fill * fill_price) / new_quantity
+      };
+    } else {
+      let close_abs = quantity.abs().min(fill.abs());
+      realized = close_abs * (fill_price - cost) * quantity.signum() * scale;
+      if new_quantity.abs() <= epsilon {
+        cost = NumT::zero();
+      } else if fill.abs() > quantity.abs() {
+        cost = fill_price;
+      }
+    }
+    quantity = if new_quantity.abs() <= epsilon { NumT::zero() } else { new_quantity };
+    r[index] = match mode {
+      0 => quantity,
+      1 => cost,
+      2 => realized,
+      _ => NumT::nan(),
+    };
+  }
+  Ok(())
+}

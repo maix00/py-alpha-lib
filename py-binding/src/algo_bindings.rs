@@ -2860,6 +2860,52 @@
       ta_fret(&ctx, r, open, close, is_calc, delay, periods).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Sequential average-cost fill chain.
+  #[pyfunction]
+  fn ft_average_cost_chain<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    fill_qty: &'py Bound<'_, PyAny>,
+    price: &'py Bound<'_, PyAny>,
+    multiplier: &'py Bound<'_, PyAny>,
+    prior_qty: f64,
+    prior_cost: f64,
+    mode: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, fill_qty), price), multiplier)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(fill_qty.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(price.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(multiplier.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let fill_qty = fill_qty.as_array();
+      let fill_qty = fill_qty.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let price = price.as_array();
+      let price = price.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let multiplier = multiplier.as_array();
+      let multiplier = multiplier.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_average_cost_chain(&ctx, r, fill_qty, price, multiplier, prior_qty, prior_cost, mode).map_err(|e| e.into())
+    } else if let Some((((mut r, fill_qty), price), multiplier)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(fill_qty.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(price.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(multiplier.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let fill_qty = fill_qty.as_array();
+      let fill_qty = fill_qty.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let price = price.as_array();
+      let price = price.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let multiplier = multiplier.as_array();
+      let multiplier = multiplier.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_average_cost_chain(&ctx, r, fill_qty, price, multiplier, prior_qty as f32, prior_cost as f32, mode).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Bar visibility timestamps relative to the first bar.
   #[pyfunction]
   fn ft_bar_visibility<'py>(
@@ -10007,6 +10053,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(entropy, m)?)?;
   m.add_function(wrap_pyfunction!(filter, m)?)?;
   m.add_function(wrap_pyfunction!(fret, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_average_cost_chain, m)?)?;
   m.add_function(wrap_pyfunction!(ft_bar_visibility, m)?)?;
   m.add_function(wrap_pyfunction!(ft_corr, m)?)?;
   m.add_function(wrap_pyfunction!(ft_cov, m)?)?;

@@ -720,6 +720,30 @@ def FRET[A: np.ndarray | list[np.ndarray]](
     _algo.fret(r, open, close, is_calc, delay, periods)
     return r
 
+def FT_AVERAGE_COST_CHAIN[A: np.ndarray | list[np.ndarray]](
+  fill_qty: A, price: A, multiplier: A, prior_qty: float, prior_cost: float, mode: int
+) -> A:
+  """
+  Sequential average-cost fill chain.
+  
+  Output mode 0 = running quantity after each fill, 1 = average cost,
+  2 = realized pnl.  One call handles an entire same-product fill batch.
+  """
+  if isinstance(fill_qty, list) and isinstance(price, list) and isinstance(multiplier, list):
+    fill_qty = [_to_f64(x) for x in fill_qty]
+    price = [_to_f64(x) for x in price]
+    multiplier = [_to_f64(x) for x in multiplier]
+    r = [np.empty_like(x) for x in fill_qty]
+    _algo.ft_average_cost_chain(r, fill_qty, price, multiplier, prior_qty, prior_cost, mode)
+    return r
+  else:
+    fill_qty = _to_f64(fill_qty)
+    price = _to_f64(price)
+    multiplier = _to_f64(multiplier)
+    r = np.empty_like(fill_qty)
+    _algo.ft_average_cost_chain(r, fill_qty, price, multiplier, prior_qty, prior_cost, mode)
+    return r
+
 def FT_BAR_VISIBILITY[A: np.ndarray | list[np.ndarray]](
   indices: A, open_basis: int, open_delay: float, end_delay: float, freq: float
 ) -> A:

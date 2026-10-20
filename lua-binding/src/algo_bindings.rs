@@ -282,6 +282,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_AVERAGE_COST_CHAIN",
+      lua.create_function(|lua, (fill_qty, price, multiplier, prior_qty, prior_cost, mode): (NumArray, NumArray, NumArray, f64, f64, usize)| {
+        let mut r = vec![0.0; fill_qty.len()];
+        ta_ft_average_cost_chain::<f64>(&ctx(lua), &mut r, &fill_qty, &price, &multiplier, prior_qty, prior_cost, mode)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_BAR_VISIBILITY",
       lua.create_function(|lua, (indices, open_basis, open_delay, end_delay, freq): (NumArray, usize, f64, f64, f64)| {
         let mut r = vec![0.0; indices.len()];
