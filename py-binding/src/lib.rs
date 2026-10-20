@@ -237,6 +237,20 @@ impl EventHeap {
     })
   }
 
+  fn pop_batch(&mut self, py: Python<'_>) -> Option<(i32, Vec<Py<PyAny>>)> {
+    let first = self.pop(py)?;
+    let (first_ts, first_kind, _sequence, _counter, first_payload) = first;
+    let mut batch = vec![first_payload];
+    while let Some(std::cmp::Reverse(entry)) = self.heap.peek() {
+      if entry.timestamp != first_ts || entry.kind != first_kind {
+        break;
+      }
+      let next = self.pop(py)?;
+      batch.push(next.4);
+    }
+    Some((first_kind, batch))
+  }
+
   fn peek_key(&self) -> Option<(i64, i32, i32, u64)> {
     self.heap.peek().map(|std::cmp::Reverse(entry)| {
       (entry.timestamp, entry.kind, entry.sequence, entry.counter)
