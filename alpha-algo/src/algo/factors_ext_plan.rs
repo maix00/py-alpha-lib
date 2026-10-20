@@ -15,17 +15,19 @@
 // follow numpy semantics (NaN propagates; `maximum/minimum` return NaN when
 // either side is NaN; `sign(-0.0) == 0`).
 
-use num_traits::{Float, ToPrimitive};
+use num_traits::Float;
 
 use crate::algo::{
   ta_argmax, ta_argmax_raw, ta_argmin, ta_argmin_raw, ta_corr_nan, ta_cov_nan,
   ta_ema_adjust, ta_ft_group, ta_ft_ordinal_rank, ta_ft_rank, ta_ft_rank_masked,
-  ta_ft_residualize, ta_ft_zscore, ta_linreg_r2, ta_linreg_resid_std, ta_linreg_slope,
+  ta_ft_residualize, ta_ft_scope_agg, ta_ft_zscore, ta_linreg_r2, ta_linreg_resid_std, ta_linreg_slope,
   ta_linreg_tstat, ta_mad, ta_max_nan, ta_mean_nan, ta_median, ta_min_nan, ta_quantile_nan,
   ta_skew_exact, ta_std_nan, ta_sum_nan, ta_var_nan, Context, Error,
 };
 
 pub const PLAN_FILL: usize = 2;
+pub const PLAN_FUSED: usize = 90;
+pub const PLAN_SCOPE: usize = 80;
 pub const PLAN_SHIFT: usize = 1;
 
 pub const PLAN_NEG: usize = 10;
@@ -145,39 +147,82 @@ fn plan_shift<NumT: Float>(
   Ok(())
 }
 
+fn unary_loop<NumT: Float, F: Fn(NumT) -> NumT>(
+  out: &mut [NumT], input: &PlanOperand<'_, NumT>, operation: F,
+) {
+  match input {
+    PlanOperand::Slot(values) => {
+      for index in 0..out.len() {
+        out[index] = operation(values[index]);
+      }
+    }
+    PlanOperand::Scalar(value) => {
+      let value = *value;
+      out.fill(operation(value));
+    }
+  }
+}
+
+fn binary_loop<NumT: Float, F: Fn(NumT, NumT) -> NumT>(
+  out: &mut [NumT],
+  a: &PlanOperand<'_, NumT>,
+  b: &PlanOperand<'_, NumT>,
+  operation: F,
+) {
+  match (a, b) {
+    (PlanOperand::Slot(left), PlanOperand::Slot(right)) => {
+      for index in 0..out.len() {
+        out[index] = operation(left[index], right[index]);
+      }
+    }
+    (PlanOperand::Slot(left), PlanOperand::Scalar(right)) => {
+      let right = *right;
+      for index in 0..out.len() {
+        out[index] = operation(left[index], right);
+      }
+    }
+    (PlanOperand::Scalar(left), PlanOperand::Slot(right)) => {
+      let left = *left;
+      for index in 0..out.len() {
+        out[index] = operation(left, right[index]);
+      }
+    }
+    (PlanOperand::Scalar(left), PlanOperand::Scalar(right)) => {
+      out.fill(operation(*left, *right));
+    }
+  }
+}
+
 fn plan_unary<NumT: Float>(
   code: usize, out: &mut [NumT], input: &PlanOperand<'_, NumT>,
 ) -> Result<(), Error> {
-  for i in 0..out.len() {
-    let value = input.at(i);
-    out[i] = match code {
-      PLAN_NEG => -value,
-      PLAN_ABS => value.abs(),
-      PLAN_LOG => value.ln(),
-      PLAN_SQRT => value.sqrt(),
-      PLAN_TANH => value.tanh(),
-      PLAN_EXP => value.exp(),
-      PLAN_SIGN => {
-        if value.is_nan() {
-          NumT::nan()
-        } else if value > NumT::zero() {
-          NumT::one()
-        } else if value < NumT::zero() {
-          -NumT::one()
-        } else {
-          NumT::zero()
-        }
+  match code {
+    PLAN_NEG => unary_loop(out, input, |value| -value),
+    PLAN_ABS => unary_loop(out, input, |value| value.abs()),
+    PLAN_LOG => unary_loop(out, input, |value| value.ln()),
+    PLAN_SQRT => unary_loop(out, input, |value| value.sqrt()),
+    PLAN_TANH => unary_loop(out, input, |value| value.tanh()),
+    PLAN_EXP => unary_loop(out, input, |value| value.exp()),
+    PLAN_SIGN => unary_loop(out, input, |value| {
+      if value.is_nan() {
+        NumT::nan()
+      } else if value > NumT::zero() {
+        NumT::one()
+      } else if value < NumT::zero() {
+        -NumT::one()
+      } else {
+        NumT::zero()
       }
-      // numpy.logical_not: NaN is truthy, so `not NaN == 0`.
-      PLAN_NOT => {
-        if value != NumT::zero() {
-          NumT::zero()
-        } else {
-          NumT::one()
-        }
+    }),
+    // numpy.logical_not: NaN is truthy, so `not NaN == 0`.
+    PLAN_NOT => unary_loop(out, input, |value| {
+      if value != NumT::zero() {
+        NumT::zero()
+      } else {
+        NumT::one()
       }
-      _ => return Err(Error::InvalidParameter(format!("unknown unary plan op {code}"))),
-    };
+    }),
+    _ => return Err(Error::InvalidParameter(format!("unknown unary plan op {code}"))),
   }
   Ok(())
 }
@@ -196,42 +241,42 @@ fn plan_binary<NumT: Float>(
   a: &PlanOperand<'_, NumT>,
   b: &PlanOperand<'_, NumT>,
 ) -> Result<(), Error> {
-  for i in 0..out.len() {
-    let left = a.at(i);
-    let right = b.at(i);
-    out[i] = match code {
-      PLAN_ADD => left + right,
-      PLAN_SUB => left - right,
-      PLAN_MUL => left * right,
-      PLAN_DIV => left / right,
-      PLAN_POW => left.powf(right),
-      // numpy.maximum/minimum propagate NaN instead of ignoring it.
-      PLAN_MAX => {
-        if left.is_nan() || right.is_nan() {
-          NumT::nan()
-        } else {
-          left.max(right)
-        }
+  match code {
+    PLAN_ADD => binary_loop(out, a, b, |left, right| left + right),
+    PLAN_SUB => binary_loop(out, a, b, |left, right| left - right),
+    PLAN_MUL => binary_loop(out, a, b, |left, right| left * right),
+    PLAN_DIV => binary_loop(out, a, b, |left, right| left / right),
+    PLAN_POW => binary_loop(out, a, b, |left, right| left.powf(right)),
+    // numpy.maximum/minimum propagate NaN instead of ignoring it.
+    PLAN_MAX => binary_loop(out, a, b, |left, right| {
+      if left.is_nan() || right.is_nan() {
+        NumT::nan()
+      } else {
+        left.max(right)
       }
-      PLAN_MIN => {
-        if left.is_nan() || right.is_nan() {
-          NumT::nan()
-        } else {
-          left.min(right)
-        }
+    }),
+    PLAN_MIN => binary_loop(out, a, b, |left, right| {
+      if left.is_nan() || right.is_nan() {
+        NumT::nan()
+      } else {
+        left.min(right)
       }
-      // Comparison/logical ops mirror numpy: NaN comparisons are false
-      // (except !=), and logical ops treat nonzero (including NaN) as true.
-      PLAN_GT => bool_value(left > right),
-      PLAN_LT => bool_value(left < right),
-      PLAN_GE => bool_value(left >= right),
-      PLAN_LE => bool_value(left <= right),
-      PLAN_EQ => bool_value(left == right),
-      PLAN_NE => bool_value(left != right),
-      PLAN_AND => bool_value(left != NumT::zero() && right != NumT::zero()),
-      PLAN_OR => bool_value(left != NumT::zero() || right != NumT::zero()),
-      _ => return Err(Error::InvalidParameter(format!("unknown binary plan op {code}"))),
-    };
+    }),
+    // Comparison/logical ops mirror numpy: NaN comparisons are false (except !=),
+    // and logical ops treat nonzero (including NaN) as true.
+    PLAN_GT => binary_loop(out, a, b, |left, right| bool_value(left > right)),
+    PLAN_LT => binary_loop(out, a, b, |left, right| bool_value(left < right)),
+    PLAN_GE => binary_loop(out, a, b, |left, right| bool_value(left >= right)),
+    PLAN_LE => binary_loop(out, a, b, |left, right| bool_value(left <= right)),
+    PLAN_EQ => binary_loop(out, a, b, |left, right| bool_value(left == right)),
+    PLAN_NE => binary_loop(out, a, b, |left, right| bool_value(left != right)),
+    PLAN_AND => binary_loop(out, a, b, |left, right| {
+      bool_value(left != NumT::zero() && right != NumT::zero())
+    }),
+    PLAN_OR => binary_loop(out, a, b, |left, right| {
+      bool_value(left != NumT::zero() || right != NumT::zero())
+    }),
+    _ => return Err(Error::InvalidParameter(format!("unknown binary plan op {code}"))),
   }
   Ok(())
 }
@@ -281,6 +326,99 @@ fn rolling_op<NumT: Float + Send + Sync>(
 /// returned slice must not outlive that allocation.
 unsafe fn slot_slice<'a, NumT>(pointer: *const NumT, index: usize, len: usize) -> &'a [NumT] {
   unsafe { std::slice::from_raw_parts(pointer.add(index * len), len) }
+}
+
+/// 逐元素子图的融合执行：把整棵子图按 4K 元素分块求值，中间结果留在寄存器块里。
+///
+/// 程序格式（存放在 `table` 尾部 aux 区）：
+///   * 前 `2 * input_count` 个浮点：每个输入 `[slot_id 或 -1, 立即数]`
+///   * 之后每 4 个浮点一个节点：`[code, dst, src1, src2]`；`src < input_count`
+///     表示输入，否则是中间寄存器（拓扑序，必然已算过）。
+/// 每个块内按节点顺序跑紧循环，块之间复用寄存器缓冲，因此不会为每个节点分配
+/// 整面板，也不会逐元素做 opcode 分派。
+fn fused_operand<'a, NumT: Float>(
+  register: usize,
+  index: usize,
+  input_count: usize,
+  start: usize,
+  stop: usize,
+  inputs: &'a [PlanOperand<'a, NumT>],
+  before: &'a [Vec<NumT>],
+) -> Result<PlanOperand<'a, NumT>, Error> {
+  if register < input_count {
+    return Ok(match &inputs[register] {
+      PlanOperand::Slot(values) => PlanOperand::Slot(&values[start..stop]),
+      PlanOperand::Scalar(value) => PlanOperand::Scalar(*value),
+    });
+  }
+  let local = register - input_count;
+  if local >= index {
+    return Err(Error::InvalidParameter(
+      "fused register used before it is written".into(),
+    ));
+  }
+  Ok(PlanOperand::Slot(&before[local]))
+}
+
+fn plan_fused<NumT: Float + Send + Sync>(
+  out: &mut [NumT],
+  pointer: *mut NumT,
+  len: usize,
+  program: &[NumT],
+  input_count: usize,
+  node_count: usize,
+) -> Result<(), Error> {
+  const BLOCK: usize = 4096;
+  let needed = 2 * input_count + 4 * node_count;
+  if program.len() < needed || node_count == 0 {
+    return Err(Error::InvalidParameter("fused program is truncated".into()));
+  }
+  let mut inputs: Vec<PlanOperand<'_, NumT>> = Vec::with_capacity(input_count);
+  for index in 0..input_count {
+    let slot = program[2 * index].to_usize();
+    let value = program[2 * index + 1];
+    inputs.push(match slot {
+      Some(slot) => PlanOperand::Slot(unsafe { slot_slice(pointer, slot, len) }),
+      None => PlanOperand::Scalar(value),
+    });
+  }
+  let nodes_base = 2 * input_count;
+  let mut registers: Vec<Vec<NumT>> = (0..node_count)
+    .map(|_| vec![NumT::zero(); BLOCK.min(out.len().max(1))])
+    .collect();
+  for start in (0..out.len()).step_by(BLOCK) {
+    let stop = (start + BLOCK).min(out.len());
+    let width = stop - start;
+    for index in 0..node_count {
+      let row = nodes_base + 4 * index;
+      let code = program[row]
+        .to_usize()
+        .ok_or_else(|| Error::InvalidParameter("fused code is not an integer".into()))?;
+      let src1 = program[row + 2]
+        .to_usize()
+        .ok_or_else(|| Error::InvalidParameter("fused register is not an integer".into()))?;
+      let src2 = program[row + 3]
+        .to_usize()
+        .ok_or_else(|| Error::InvalidParameter("fused register is not an integer".into()))?;
+      let (before, rest) = registers.split_at_mut(index);
+      let target = &mut rest[0][..width];
+      let a = fused_operand(src1, index, input_count, start, stop, &inputs, before)?;
+      let b = fused_operand(src2, index, input_count, start, stop, &inputs, before)?;
+      if (PLAN_NEG..=PLAN_NOT).contains(&code) {
+        plan_unary(code, target, &a)?;
+      } else if (PLAN_ADD..=PLAN_MIN).contains(&code)
+        || (PLAN_GT..=PLAN_OR).contains(&code)
+      {
+        plan_binary(code, target, &a, &b)?;
+      } else {
+        return Err(Error::InvalidParameter(format!(
+          "unsupported fused op {code}"
+        )));
+      }
+    }
+    out[start..stop].copy_from_slice(&registers[node_count - 1][..width]);
+  }
+  Ok(())
 }
 
 fn cross_op<NumT: Float + Send + Sync>(
@@ -441,6 +579,17 @@ pub fn ta_ft_run_plan<NumT: Float + Send + Sync>(
       plan_unary(code, out, &a)?;
     } else if (PLAN_ADD..=PLAN_MIN).contains(&code) || (PLAN_GT..=PLAN_OR).contains(&code) {
       plan_binary(code, out, &a, &b)?;
+    } else if code == PLAN_SCOPE {
+      ta_ft_scope_agg(ctx, out, a.slot()?, aux_slice, min_count, window, quantile)?;
+    } else if code == PLAN_FUSED {
+      plan_fused(
+        out,
+        pointer,
+        len,
+        aux_slice,
+        params[param_base + 4].to_usize().unwrap_or(0),
+        params[param_base + 5].to_usize().unwrap_or(0),
+      )?;
     } else if (PLAN_RANK..=PLAN_RESIDUALIZE_3).contains(&code) {
       cross_op(code, ctx, out, &a, b.slots_ref(), c, d, mask, aux_slice, window)?;
     } else {
