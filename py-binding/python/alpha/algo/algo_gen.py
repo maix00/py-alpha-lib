@@ -908,28 +908,26 @@ def FT_RESIDUALIZE[A: np.ndarray | list[np.ndarray]](
     return r
 
 def FT_RUN_PLAN[A: np.ndarray | list[np.ndarray]](
-  slots: A, plan: A, params: A, slot_count: int, op_count: int, leaf_count: int
+  slots: A, table: A, slot_count: int, op_count: int, leaf_count: int
 ) -> A:
   """
   Run a compiled plan over `(groups, rows)` slot panels.
   
-  `slots` carries the input panels; the returned buffer starts as a copy of
-  them so the executor can write every intermediate in place. `plan` and
-  `params` are flat tables of four fields per op (see the module comment).
+  `slots` carries the input panels; `aux` carries per-product/per-timestamp
+  vectors (ordinal tiebreak, group categories). The executor buffer starts as
+  a copy of the leaf slots so every intermediate can be written in place.
   """
-  if isinstance(slots, list) and isinstance(plan, list) and isinstance(params, list):
+  if isinstance(slots, list) and isinstance(table, list):
     slots = [_to_f64(x) for x in slots]
-    plan = [_to_f64(x) for x in plan]
-    params = [_to_f64(x) for x in params]
+    table = [_to_f64(x) for x in table]
     r = [np.empty_like(x) for x in slots]
-    _algo.ft_run_plan(r, slots, plan, params, slot_count, op_count, leaf_count)
+    _algo.ft_run_plan(r, slots, table, slot_count, op_count, leaf_count)
     return r
   else:
     slots = _to_f64(slots)
-    plan = _to_f64(plan)
-    params = _to_f64(params)
+    table = _to_f64(table)
     r = np.empty_like(slots)
-    _algo.ft_run_plan(r, slots, plan, params, slot_count, op_count, leaf_count)
+    _algo.ft_run_plan(r, slots, table, slot_count, op_count, leaf_count)
     return r
 
 def FT_SCOPE_AGG[A: np.ndarray | list[np.ndarray]](

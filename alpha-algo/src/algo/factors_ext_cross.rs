@@ -556,15 +556,15 @@ pub fn ta_ft_residualize<NumT: Float + Send + Sync>(
   mask: &[NumT],
   exposure_count: usize,
 ) -> Result<(), Error> {
+  let k = exposure_count.min(3);
   if r.len() != signal.len()
     || mask.len() != signal.len()
     || exposure1.len() != signal.len()
-    || exposure2.len() != signal.len()
-    || exposure3.len() != signal.len()
+    || (k >= 2 && exposure2.len() != signal.len())
+    || (k >= 3 && exposure3.len() != signal.len())
   {
     return Err(Error::LengthMismatch(signal.len(), r.len()));
   }
-  let k = exposure_count.min(3);
   r.fill(NumT::nan());
   let (groups, rows) = layout(signal.len(), ctx.groups());
   if groups == 0 || rows == 0 {

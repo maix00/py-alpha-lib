@@ -3424,8 +3424,7 @@
     py: Python<'py>,
     r: &'py Bound<'_, PyAny>,
     slots: &'py Bound<'_, PyAny>,
-    plan: &'py Bound<'_, PyAny>,
-    params: &'py Bound<'_, PyAny>,
+    table: &'py Bound<'_, PyAny>,
     slot_count: usize,
     op_count: usize,
     leaf_count: usize,
@@ -3434,34 +3433,64 @@
     #[allow(unused_mut)]
     let mut ctx = ctx(py);
     // 2. check input type and do dispatch
-    if let Some((((mut r, slots), plan), params)) = r
-      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+    if let Some(((mut r, slots), table)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
       .zip(slots.extract::<PyReadonlyArray1<'py, f64>>().ok())
-      .zip(plan.extract::<PyReadonlyArray1<'py, f64>>().ok())
-      .zip(params.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      .zip(table.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
       let mut r = r.as_array_mut();
       let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
       let slots = slots.as_array();
       let slots = slots.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      let plan = plan.as_array();
-      let plan = plan.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      let params = params.as_array();
-      let params = params.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      ta_ft_run_plan(&ctx, r, slots, plan, params, slot_count, op_count, leaf_count).map_err(|e| e.into())
-    } else if let Some((((mut r, slots), plan), params)) = r
-      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      let table = table.as_array();
+      let table = table.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_run_plan(&ctx, r, slots, table, slot_count, op_count, leaf_count).map_err(|e| e.into())
+    } else if let Some(((mut r, slots), table)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
       .zip(slots.extract::<PyReadonlyArray1<'py, f32>>().ok())
-      .zip(plan.extract::<PyReadonlyArray1<'py, f32>>().ok())
-      .zip(params.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      .zip(table.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
       let mut r = r.as_array_mut();
       let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
       let slots = slots.as_array();
       let slots = slots.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      let plan = plan.as_array();
-      let plan = plan.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      let params = params.as_array();
-      let params = params.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
-      ta_ft_run_plan(&ctx, r, slots, plan, params, slot_count, op_count, leaf_count).map_err(|e| e.into())
+      let table = table.as_array();
+      let table = table.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_run_plan(&ctx, r, slots, table, slot_count, op_count, leaf_count).map_err(|e| e.into())
+    } else if let Some(((r, slots), table)) = r.cast::<PyList>().ok().zip(slots.cast::<PyList>().ok()).zip(table.cast::<PyList>().ok()) {
+      if r.len() != slots.len() || table.len() != slots.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, slots), table)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(slots.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(table.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let slots = slots.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let table = table.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(slots.into_par_iter()).zip(table.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let slots = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let table = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_run_plan(&ctx, r, slots, table, slot_count, op_count, leaf_count).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, slots), table)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(slots.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(table.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let slots = slots.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let table = table.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(slots.into_par_iter()).zip(table.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let slots = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let table = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_run_plan(&ctx, r, slots, table, slot_count, op_count, leaf_count).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
     } else { Err(PyValueError::new_err("invalid input")) }
   }
   /// Scope-partitioned expanding aggregation with `min_count` valid observations.

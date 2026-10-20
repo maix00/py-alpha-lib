@@ -355,9 +355,9 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
     )?;
     lua.globals().set(
       "FT_RUN_PLAN",
-      lua.create_function(|lua, (slots, plan, params, slot_count, op_count, leaf_count): (NumArray, NumArray, NumArray, usize, usize, usize)| {
+      lua.create_function(|lua, (slots, table, slot_count, op_count, leaf_count): (NumArray, NumArray, usize, usize, usize)| {
         let mut r = vec![0.0; slots.len()];
-        ta_ft_run_plan::<f64>(&ctx(lua), &mut r, &slots, &plan, &params, slot_count, op_count, leaf_count)?;
+        ta_ft_run_plan::<f64>(&ctx(lua), &mut r, &slots, &table, slot_count, op_count, leaf_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;

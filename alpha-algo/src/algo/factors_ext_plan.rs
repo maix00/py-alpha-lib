@@ -19,11 +19,13 @@ use num_traits::{Float, ToPrimitive};
 
 use crate::algo::{
   ta_argmax, ta_argmax_raw, ta_argmin, ta_argmin_raw, ta_corr_nan, ta_cov_nan,
-  ta_ema_adjust, ta_linreg_r2, ta_linreg_resid_std, ta_linreg_slope, ta_linreg_tstat, ta_mad,
-  ta_max_nan, ta_mean_nan, ta_median, ta_min_nan, ta_quantile_nan, ta_skew_exact, ta_std_nan,
-  ta_sum_nan, ta_var_nan, Context, Error,
+  ta_ema_adjust, ta_ft_group, ta_ft_ordinal_rank, ta_ft_rank, ta_ft_rank_masked,
+  ta_ft_residualize, ta_ft_zscore, ta_linreg_r2, ta_linreg_resid_std, ta_linreg_slope,
+  ta_linreg_tstat, ta_mad, ta_max_nan, ta_mean_nan, ta_median, ta_min_nan, ta_quantile_nan,
+  ta_skew_exact, ta_std_nan, ta_sum_nan, ta_var_nan, Context, Error,
 };
 
+pub const PLAN_FILL: usize = 2;
 pub const PLAN_SHIFT: usize = 1;
 
 pub const PLAN_NEG: usize = 10;
@@ -33,6 +35,7 @@ pub const PLAN_SQRT: usize = 13;
 pub const PLAN_TANH: usize = 14;
 pub const PLAN_EXP: usize = 15;
 pub const PLAN_SIGN: usize = 16;
+pub const PLAN_NOT: usize = 17;
 
 pub const PLAN_ADD: usize = 20;
 pub const PLAN_SUB: usize = 21;
@@ -41,6 +44,15 @@ pub const PLAN_DIV: usize = 23;
 pub const PLAN_POW: usize = 24;
 pub const PLAN_MAX: usize = 25;
 pub const PLAN_MIN: usize = 26;
+
+pub const PLAN_GT: usize = 100;
+pub const PLAN_LT: usize = 101;
+pub const PLAN_GE: usize = 102;
+pub const PLAN_LE: usize = 103;
+pub const PLAN_EQ: usize = 104;
+pub const PLAN_NE: usize = 105;
+pub const PLAN_AND: usize = 106;
+pub const PLAN_OR: usize = 107;
 
 pub const PLAN_MEAN: usize = 30;
 pub const PLAN_STD: usize = 31;
@@ -65,6 +77,15 @@ pub const PLAN_ARGMIN_RAW: usize = 48;
 pub const PLAN_CORR: usize = 60;
 pub const PLAN_COV: usize = 61;
 
+pub const PLAN_RANK: usize = 70;
+pub const PLAN_RANK_MASKED: usize = 71;
+pub const PLAN_ZSCORE: usize = 72;
+pub const PLAN_ORDINAL: usize = 73;
+pub const PLAN_GROUP: usize = 74;
+pub const PLAN_RESIDUALIZE_1: usize = 75;
+pub const PLAN_RESIDUALIZE_2: usize = 76;
+pub const PLAN_RESIDUALIZE_3: usize = 77;
+
 /// One operand of an elementwise op: either a slot panel or an immediate.
 enum PlanOperand<'a, NumT: Float> {
   Slot(&'a [NumT]),
@@ -86,6 +107,13 @@ impl<NumT: Float> PlanOperand<'_, NumT> {
       PlanOperand::Scalar(_) => {
         Err(Error::InvalidParameter("kernel operand must be a slot".into()))
       }
+    }
+  }
+
+  fn slots_ref(&self) -> Option<&[NumT]> {
+    match self {
+      PlanOperand::Slot(values) => Some(values),
+      PlanOperand::Scalar(_) => None,
     }
   }
 }
@@ -140,10 +168,26 @@ fn plan_unary<NumT: Float>(
           NumT::zero()
         }
       }
+      // numpy.logical_not: NaN is truthy, so `not NaN == 0`.
+      PLAN_NOT => {
+        if value != NumT::zero() {
+          NumT::zero()
+        } else {
+          NumT::one()
+        }
+      }
       _ => return Err(Error::InvalidParameter(format!("unknown unary plan op {code}"))),
     };
   }
   Ok(())
+}
+
+fn bool_value<NumT: Float>(value: bool) -> NumT {
+  if value {
+    NumT::one()
+  } else {
+    NumT::zero()
+  }
 }
 
 fn plan_binary<NumT: Float>(
@@ -176,6 +220,16 @@ fn plan_binary<NumT: Float>(
           left.min(right)
         }
       }
+      // Comparison/logical ops mirror numpy: NaN comparisons are false
+      // (except !=), and logical ops treat nonzero (including NaN) as true.
+      PLAN_GT => bool_value(left > right),
+      PLAN_LT => bool_value(left < right),
+      PLAN_GE => bool_value(left >= right),
+      PLAN_LE => bool_value(left <= right),
+      PLAN_EQ => bool_value(left == right),
+      PLAN_NE => bool_value(left != right),
+      PLAN_AND => bool_value(left != NumT::zero() && right != NumT::zero()),
+      PLAN_OR => bool_value(left != NumT::zero() || right != NumT::zero()),
       _ => return Err(Error::InvalidParameter(format!("unknown binary plan op {code}"))),
     };
   }
@@ -223,25 +277,93 @@ fn rolling_op<NumT: Float + Send + Sync>(
 /// `slots` carries the input panels; the returned buffer starts as a copy of
 /// them so the executor can write every intermediate in place. `plan` and
 /// `params` are flat tables of four fields per op (see the module comment).
+/// SAFETY: `pointer` must point to at least `slot_count * len` elements and the
+/// returned slice must not outlive that allocation.
+unsafe fn slot_slice<'a, NumT>(pointer: *const NumT, index: usize, len: usize) -> &'a [NumT] {
+  unsafe { std::slice::from_raw_parts(pointer.add(index * len), len) }
+}
+
+fn cross_op<NumT: Float + Send + Sync>(
+  code: usize,
+  ctx: &Context,
+  out: &mut [NumT],
+  a: &PlanOperand<'_, NumT>,
+  b: Option<&[NumT]>,
+  c: Option<&[NumT]>,
+  d: Option<&[NumT]>,
+  mask: Option<&[NumT]>,
+  aux: &[NumT],
+  operation: usize,
+) -> Result<(), Error> {
+  let signal = a.slot()?;
+  match code {
+    PLAN_RANK => ta_ft_rank(ctx, out, signal),
+    PLAN_RANK_MASKED => ta_ft_rank_masked(
+      ctx,
+      out,
+      signal,
+      b.ok_or_else(|| Error::InvalidParameter("rank_masked needs a mask slot".into()))?,
+    ),
+    PLAN_ZSCORE => ta_ft_zscore(ctx, out, signal),
+    PLAN_ORDINAL => ta_ft_ordinal_rank(
+      ctx,
+      out,
+      signal,
+      b.ok_or_else(|| Error::InvalidParameter("ordinal rank needs a mask slot".into()))?,
+      aux,
+      operation,
+    ),
+    PLAN_GROUP => ta_ft_group(
+      ctx,
+      out,
+      signal,
+      b.ok_or_else(|| Error::InvalidParameter("group op needs a mask slot".into()))?,
+      aux,
+      operation,
+    ),
+    PLAN_RESIDUALIZE_1 | PLAN_RESIDUALIZE_2 | PLAN_RESIDUALIZE_3 => {
+      let count = code - PLAN_RESIDUALIZE_1 + 1;
+      let e1 = b.ok_or_else(|| Error::InvalidParameter("residualize needs an exposure".into()))?;
+      let e2 = if count >= 2 { c.unwrap_or(&[]) } else { &[] };
+      let e3 = if count >= 3 { d.unwrap_or(&[]) } else { &[] };
+      let mask = mask
+        .ok_or_else(|| Error::InvalidParameter("residualize needs a mask slot".into()))?;
+      ta_ft_residualize(ctx, out, signal, e1, e2, e3, mask, count)
+    }
+    _ => Err(Error::InvalidParameter(format!("unknown cross plan op {code}"))),
+  }
+}
+
+/// Run a compiled plan over `(groups, rows)` slot panels.
+///
+/// `slots` carries the input panels; `aux` carries per-product/per-timestamp
+/// vectors (ordinal tiebreak, group categories). The executor buffer starts as
+/// a copy of the leaf slots so every intermediate can be written in place.
 pub fn ta_ft_run_plan<NumT: Float + Send + Sync>(
   ctx: &Context,
   r: &mut [NumT],
   slots: &[NumT],
-  plan: &[NumT],
-  params: &[NumT],
+  table: &[NumT],
   slot_count: usize,
   op_count: usize,
   leaf_count: usize,
 ) -> Result<(), Error> {
+  const PLAN_STRIDE: usize = 8;
+  const PARAM_STRIDE: usize = 8;
   if slot_count == 0 || slots.is_empty() || slots.len() % slot_count != 0 {
     return Err(Error::LengthMismatch(slots.len(), slot_count));
   }
   if r.len() != slots.len() {
     return Err(Error::LengthMismatch(r.len(), slots.len()));
   }
-  if plan.len() < op_count * 4 || params.len() < op_count * 6 {
-    return Err(Error::LengthMismatch(plan.len(), op_count * 6));
+  // The generator writes one table per plan: operator rows, parameter rows,
+  // then the per-product aux vector.
+  let table_len = op_count * PLAN_STRIDE + op_count * PARAM_STRIDE;
+  if table.len() < table_len {
+    return Err(Error::LengthMismatch(table.len(), table_len));
   }
+  let (plan, rest) = table.split_at(op_count * PLAN_STRIDE);
+  let (params, aux) = rest.split_at(op_count * PARAM_STRIDE);
   if leaf_count > slot_count {
     return Err(Error::InvalidParameter(format!(
       "leaf_count {leaf_count} exceeds slot_count {slot_count}"
@@ -254,7 +376,8 @@ pub fn ta_ft_run_plan<NumT: Float + Send + Sync>(
   r[..leaf_count * len].copy_from_slice(&slots[..leaf_count * len]);
   let pointer = r.as_mut_ptr();
   for index in 0..op_count {
-    let base = index * 4;
+    let base = index * PLAN_STRIDE;
+    let param_base = index * PARAM_STRIDE;
     let code = plan[base]
       .to_usize()
       .ok_or_else(|| Error::InvalidParameter("plan code is not an integer".into()))?;
@@ -266,54 +389,60 @@ pub fn ta_ft_run_plan<NumT: Float + Send + Sync>(
         "plan out slot {out_idx} out of range (slots={slot_count})"
       )));
     }
-    let param_base = index * 6;
-    // 负的槽位号表示立即数，值放在参数表第 5/6 列。
-    let a_raw = plan[base + 2];
-    let b_raw = plan[base + 3];
-    let a_index = a_raw.to_usize();
-    let b_index = b_raw.to_usize();
-    if let Some(index_value) = a_index {
-      if index_value >= slot_count {
+    // 负的槽位号表示立即数或缺失操作数；值放在参数表第 5/6 列。
+    let a_index = plan[base + 2].to_usize();
+    let b_index = plan[base + 3].to_usize();
+    let c_index = plan[base + 4].to_usize();
+    let d_index = plan[base + 5].to_usize();
+    let e_index = plan[base + 6].to_usize();
+    for slot in [a_index, b_index, c_index, d_index, e_index].into_iter().flatten() {
+      if slot >= slot_count {
         return Err(Error::InvalidParameter(format!(
-          "plan input slot {index_value} out of range (slots={slot_count})"
+          "plan input slot {slot} out of range (slots={slot_count})"
+        )));
+      }
+      if slot == out_idx {
+        return Err(Error::InvalidParameter(format!(
+          "plan op {index} aliases output slot {out_idx} with an input"
         )));
       }
     }
-    if let Some(index_value) = b_index {
-      if index_value >= slot_count {
-        return Err(Error::InvalidParameter(format!(
-          "plan input slot {index_value} out of range (slots={slot_count})"
-        )));
-      }
-    }
-    // The compiler never aliases the destination with an input slot: kernels
-    // fill the output before reading, so sharing storage would corrupt values.
-    debug_assert!(a_index != Some(out_idx) && b_index != Some(out_idx));
-    // SAFETY: slot ranges are disjoint (checked above) and `r` is a valid
-    // allocation of `slot_count * len` elements for the whole loop.
+    // SAFETY: every slot index is in range and disjoint from `out`; `r` lives
+    // for the whole loop and the slices never outlive it.
     let out = unsafe { std::slice::from_raw_parts_mut(pointer.add(out_idx * len), len) };
     let a = match a_index {
-      Some(slot) => PlanOperand::Slot(unsafe {
-        std::slice::from_raw_parts(pointer.add(slot * len), len)
-      }),
+      Some(slot) => PlanOperand::Slot(unsafe { slot_slice(pointer, slot, len) }),
       None => PlanOperand::Scalar(params[param_base + 4]),
     };
     let b = match b_index {
-      Some(slot) => PlanOperand::Slot(unsafe {
-        std::slice::from_raw_parts(pointer.add(slot * len), len)
-      }),
+      Some(slot) => PlanOperand::Slot(unsafe { slot_slice(pointer, slot, len) }),
       None => PlanOperand::Scalar(params[param_base + 5]),
     };
+    let c = c_index.map(|slot| unsafe { slot_slice(pointer, slot, len) });
+    let d = d_index.map(|slot| unsafe { slot_slice(pointer, slot, len) });
+    let mask = e_index.map(|slot| unsafe { slot_slice(pointer, slot, len) });
     let window = params[param_base].to_usize().unwrap_or(0);
     let min_count = params[param_base + 1].to_usize().unwrap_or(0);
     let quantile = params[param_base + 2];
     let periods = params[param_base + 3].to_i64().unwrap_or(0);
-    if code == PLAN_SHIFT {
+    let aux_offset = params[param_base + 6].to_usize().unwrap_or(0);
+    let aux_len = params[param_base + 7].to_usize().unwrap_or(0);
+    let aux_slice = if aux_len > 0 {
+      aux.get(aux_offset..aux_offset + aux_len)
+        .ok_or_else(|| Error::InvalidParameter("plan aux slice out of range".into()))?
+    } else {
+      &[]
+    };
+    if code == PLAN_FILL {
+      out.fill(params[param_base + 4]);
+    } else if code == PLAN_SHIFT {
       plan_shift(out, a.slot()?, groups, rows, periods)?;
-    } else if (PLAN_NEG..=PLAN_SIGN).contains(&code) {
+    } else if (PLAN_NEG..=PLAN_NOT).contains(&code) {
       plan_unary(code, out, &a)?;
-    } else if (PLAN_ADD..=PLAN_MIN).contains(&code) {
+    } else if (PLAN_ADD..=PLAN_MIN).contains(&code) || (PLAN_GT..=PLAN_OR).contains(&code) {
       plan_binary(code, out, &a, &b)?;
+    } else if (PLAN_RANK..=PLAN_RESIDUALIZE_3).contains(&code) {
+      cross_op(code, ctx, out, &a, b.slots_ref(), c, d, mask, aux_slice, window)?;
     } else {
       rolling_op(code, ctx, out, a.slot()?, b.slot()?, window, min_count, quantile)?;
     }
@@ -339,18 +468,21 @@ mod tests {
       *value = 1.0;
     }
     let plan = [
-      PLAN_SHIFT as f64, 2.0, 0.0, 0.0,
-      PLAN_ADD as f64, 3.0, 2.0, -1.0,
-      PLAN_SIGN as f64, 4.0, 3.0, 3.0,
+      PLAN_SHIFT as f64, 2.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0,
+      PLAN_ADD as f64, 3.0, 2.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+      PLAN_SIGN as f64, 4.0, 3.0, 3.0, -1.0, -1.0, -1.0, -1.0,
     ];
     let params = [
-      0.0, 0.0, 0.0, 1.0, 0.0, 1.0, // shift(input, 1)
-      0.0, 0.0, 0.0, 0.0, 0.0, 1.0, // add, b = 1.0 immediate
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // sign
+      0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, // shift(input, 1)
+      0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, // add, b = 1.0 immediate
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // sign
     ];
+    let mut table = Vec::new();
+    table.extend_from_slice(&plan);
+    table.extend_from_slice(&params);
     let ctx = Context::new(0, groups as u32, 0);
     let mut out = vec![0.0; slots.len()];
-    ta_ft_run_plan(&ctx, &mut out, &slots, &plan, &params, 5, 3, 2).unwrap();
+    ta_ft_run_plan(&ctx, &mut out, &slots, &table, 5, 3, 2).unwrap();
     let shifted = &out[2 * groups * rows..3 * groups * rows];
     let signed = &out[4 * groups * rows..5 * groups * rows];
     assert!(shifted[0].is_nan() && shifted[4].is_nan());
@@ -369,11 +501,14 @@ mod tests {
     let input = [1.0, 2.0, 3.0, 4.0, 5.0];
     let mut slots = vec![0.0; rows * 2];
     slots[..rows].copy_from_slice(&input);
-    let plan = [PLAN_MEAN as f64, 1.0, 0.0, 0.0];
-    let params = [2.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+    let plan = [PLAN_MEAN as f64, 1.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0];
+    let params = [2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut table = Vec::new();
+    table.extend_from_slice(&plan);
+    table.extend_from_slice(&params);
     let ctx = Context::new(0, groups as u32, 0);
     let mut out = vec![0.0; slots.len()];
-    ta_ft_run_plan(&ctx, &mut out, &slots, &plan, &params, 2, 1, 1).unwrap();
+    ta_ft_run_plan(&ctx, &mut out, &slots, &table, 2, 1, 1).unwrap();
     let mean = &out[rows..2 * rows];
     // min_count = 1, so the first partial window is already eligible.
     assert_eq!(mean[0], 1.0);
