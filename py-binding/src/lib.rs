@@ -175,6 +175,54 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct OrderCore {
+  quantity: f64,
+  filled: f64,
+  status: i32,
+  average_price: f64,
+}
+
+#[pymethods]
+impl OrderCore {
+  #[new]
+  fn new(quantity: f64) -> Self {
+    Self { quantity: quantity.abs(), filled: 0.0, status: 0, average_price: 0.0 }
+  }
+
+  fn apply_fill(&mut self, quantity: f64, price: f64) -> f64 {
+    if self.status != 0 {
+      return 0.0;
+    }
+    let remaining = (self.quantity - self.filled).max(0.0);
+    let fill = quantity.abs().min(remaining);
+    if fill > 0.0 {
+      let total = self.average_price * self.filled + price * fill;
+      self.filled += fill;
+      self.average_price = total / self.filled;
+      if self.filled >= self.quantity - 1e-12 {
+        self.filled = self.quantity;
+        self.status = 1;
+      }
+    }
+    fill
+  }
+
+  fn cancel(&mut self) { if self.status == 0 { self.status = 2; } }
+  fn reject(&mut self) { if self.status == 0 { self.status = 3; } }
+
+  #[getter]
+  fn quantity(&self) -> f64 { self.quantity }
+  #[getter]
+  fn filled(&self) -> f64 { self.filled }
+  #[getter]
+  fn remaining(&self) -> f64 { (self.quantity - self.filled).max(0.0) }
+  #[getter]
+  fn status(&self) -> i32 { self.status }
+  #[getter]
+  fn average_price(&self) -> f64 { self.average_price }
+}
+
+#[pyclass(unsendable)]
 pub struct LedgerAccount {
   cash: f64,
   positions: std::collections::HashMap<String, (f64, f64)>,
@@ -461,6 +509,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<EventHeap>()?;
   m.add_class::<MarketDataMatrix>()?;
   m.add_class::<LedgerAccount>()?;
+  m.add_class::<OrderCore>()?;
   register_functions(m)?;
   Ok(())
 }
