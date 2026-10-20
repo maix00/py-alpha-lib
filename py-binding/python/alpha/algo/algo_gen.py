@@ -1025,6 +1025,28 @@ def FT_SCOPE_AGG[A: np.ndarray | list[np.ndarray]](
     _algo.ft_scope_agg(r, input, keys, min_count, op, quantile)
     return r
 
+def FT_SCOPE_TRUNC[A: np.ndarray | list[np.ndarray]](
+  input: A, keys: A, trunc_start: int, trunc_end: int, min_count: int, op: int, quantile: float
+) -> A:
+  """
+  Prefix aggregation inside scope partitions with fixed `[start, end]` truncation.
+  
+  `trunc_end < 0` means "up to the current bar". Positions after a fixed end
+  keep the completed window's value, matching pandas expanding semantics.
+  """
+  if isinstance(input, list) and isinstance(keys, list):
+    input = [_to_f64(x) for x in input]
+    keys = [_to_f64(x) for x in keys]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_scope_trunc(r, input, keys, trunc_start, trunc_end, min_count, op, quantile)
+    return r
+  else:
+    input = _to_f64(input)
+    keys = _to_f64(keys)
+    r = np.empty_like(input)
+    _algo.ft_scope_trunc(r, input, keys, trunc_start, trunc_end, min_count, op, quantile)
+    return r
+
 def FT_SPEARMAN[A: np.ndarray | list[np.ndarray]](
   left: A, right: A
 ) -> A:

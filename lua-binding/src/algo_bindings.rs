@@ -394,6 +394,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_SCOPE_TRUNC",
+      lua.create_function(|lua, (input, keys, trunc_start, trunc_end, min_count, op, quantile): (NumArray, NumArray, usize, usize, usize, usize, f64)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_scope_trunc::<f64>(&ctx(lua), &mut r, &input, &keys, trunc_start, trunc_end, min_count, op, quantile)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_SPEARMAN",
       lua.create_function(|lua, (left, right): (NumArray, NumArray)| {
         let mut r = vec![0.0; left.len()];
