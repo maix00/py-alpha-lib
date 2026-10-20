@@ -3327,6 +3327,81 @@
       ta_ft_residualize(&ctx, r, signal, exposure1, exposure2, exposure3, mask, exposure_count).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Scope-partitioned expanding aggregation with `min_count` valid observations.
+  #[pyfunction]
+  fn ft_scope_agg<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    keys: &'py Bound<'_, PyAny>,
+    min_count: usize,
+    op: usize,
+    quantile: f64,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, input), keys)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(keys.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let keys = keys.as_array();
+      let keys = keys.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_scope_agg(&ctx, r, input, keys, min_count, op, quantile).map_err(|e| e.into())
+    } else if let Some(((mut r, input), keys)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(keys.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let keys = keys.as_array();
+      let keys = keys.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_scope_agg(&ctx, r, input, keys, min_count, op, quantile as f32).map_err(|e| e.into())
+    } else if let Some(((r, input), keys)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()).zip(keys.cast::<PyList>().ok()) {
+      if r.len() != input.len() || keys.len() != input.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, input), keys)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(keys.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let keys = keys.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(input.into_par_iter()).zip(keys.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let input = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let keys = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_scope_agg(&ctx, r, input, keys, min_count, op, quantile).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, input), keys)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(keys.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let keys = keys.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(input.into_par_iter()).zip(keys.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let input = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let keys = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_scope_agg(&ctx, r, input, keys, min_count, op, quantile as f32).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Cross-sectional Spearman correlation per timestamp.
   #[pyfunction]
   fn ft_spearman<'py>(
@@ -9259,6 +9334,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_rank, m)?)?;
   m.add_function(wrap_pyfunction!(ft_rank_masked, m)?)?;
   m.add_function(wrap_pyfunction!(ft_residualize, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_scope_agg, m)?)?;
   m.add_function(wrap_pyfunction!(ft_spearman, m)?)?;
   m.add_function(wrap_pyfunction!(ft_zscore, m)?)?;
   m.add_function(wrap_pyfunction!(fw_split, m)?)?;

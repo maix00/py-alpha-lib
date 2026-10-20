@@ -44,6 +44,7 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - FT_RANK(input: np.ndarray[float]): Cross-sectional percentage rank: `rank / valid_count - 0.5`.
 - FT_RANK_MASKED(input: np.ndarray[float], mask: np.ndarray[float]): Cross-sectional percentage rank restricted to an eligibility mask.
 - FT_RESIDUALIZE(signal: np.ndarray[float], exposure1: np.ndarray[float], exposure2: np.ndarray[float], exposure3: np.ndarray[float], mask: np.ndarray[float], exposure_count: int): Cross-sectional OLS residualization on up to three exposures.
+- FT_SCOPE_AGG(input: np.ndarray[float], keys: np.ndarray[float], min_count: int, op: int, quantile: float): Scope-partitioned expanding aggregation with `min_count` valid observations.
 - FT_SPEARMAN(left: np.ndarray[float], right: np.ndarray[float]): Cross-sectional Spearman correlation per timestamp.
 - FT_ZSCORE(input: np.ndarray[float]): Cross-sectional z-score with sample standard deviation (ddof=1). Constant rows produce 0 for observed entries, matching the pandas backend.
 - FW_SPLIT(price: np.ndarray[float], dividend: np.ndarray[float], transfer_shares: np.ndarray[float], right_shares: np.ndarray[float], right_price: np.ndarray[float]): Forward split and dividend adjustment  Adjusts prices forward (from earliest to latest event) using a loop according to arithmetic progression.

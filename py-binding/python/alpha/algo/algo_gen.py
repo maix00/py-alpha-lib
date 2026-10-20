@@ -863,6 +863,25 @@ def FT_RESIDUALIZE[A: np.ndarray | list[np.ndarray]](
     _algo.ft_residualize(r, signal, exposure1, exposure2, exposure3, mask, exposure_count)
     return r
 
+def FT_SCOPE_AGG[A: np.ndarray | list[np.ndarray]](
+  input: A, keys: A, min_count: int, op: int, quantile: float
+) -> A:
+  """
+  Scope-partitioned expanding aggregation with `min_count` valid observations.
+  """
+  if isinstance(input, list) and isinstance(keys, list):
+    input = [_to_f64(x) for x in input]
+    keys = [_to_f64(x) for x in keys]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_scope_agg(r, input, keys, min_count, op, quantile)
+    return r
+  else:
+    input = _to_f64(input)
+    keys = _to_f64(keys)
+    r = np.empty_like(input)
+    _algo.ft_scope_agg(r, input, keys, min_count, op, quantile)
+    return r
+
 def FT_SPEARMAN[A: np.ndarray | list[np.ndarray]](
   left: A, right: A
 ) -> A:
