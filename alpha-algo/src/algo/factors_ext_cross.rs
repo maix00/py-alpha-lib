@@ -19,6 +19,27 @@ fn layout(len: usize, groups: usize) -> (usize, usize) {
   (groups.min(len.max(1)), rows)
 }
 
+/// Copy a (N, T) panel into a (T, N) row-major buffer so each timestamp is one
+/// contiguous chunk. Cross-sectional kernels follow the same recipe: transpose
+/// once, process rows in parallel, transpose the result back.
+fn to_rows<NumT: Float>(input: &[NumT], groups: usize, rows: usize) -> Vec<NumT> {
+  let mut buffer = vec![NumT::nan(); groups * rows];
+  for g in 0..groups {
+    for t in 0..rows {
+      buffer[t * groups + g] = input[g * rows + t];
+    }
+  }
+  buffer
+}
+
+fn from_rows<NumT: Float>(buffer: &[NumT], out: &mut [NumT], groups: usize, rows: usize) {
+  for g in 0..groups {
+    for t in 0..rows {
+      out[g * rows + t] = buffer[t * groups + g];
+    }
+  }
+}
+
 fn average_ranks<NumT: Float>(values: &[NumT]) -> (Vec<usize>, Vec<NumT>) {
   let mut order: Vec<usize> = (0..values.len()).collect();
   order.sort_by(|a, b| {
@@ -140,40 +161,59 @@ pub fn ta_ft_rank_masked<NumT: Float + Send + Sync>(
 /// Ordinal rank (1..n) with `tiebreak` deciding equal values; `ascending == 0`
 /// ranks descending. Non-eligible entries stay NaN.
 pub fn ta_ft_ordinal_rank<NumT: Float + Send + Sync>(
-  ctx: &Context, r: &mut [NumT], input: &[NumT], mask: &[NumT], tiebreak: &[NumT], ascending: usize,
+  ctx: &Context,
+  r: &mut [NumT],
+  input: &[NumT],
+  mask: &[NumT],
+  tiebreak: &[NumT],
+  ascending: usize,
 ) -> Result<(), Error> {
-  if r.len() != input.len() || mask.len() != input.len() || tiebreak.len() < input.len() / ctx.groups().max(1) {
+  if r.len() != input.len() || mask.len() != input.len() {
     return Err(Error::LengthMismatch(r.len(), input.len()));
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
+  if groups == 0 || rows == 0 {
+    return Ok(());
+  }
+  if tiebreak.len() < groups {
+    return Err(Error::LengthMismatch(tiebreak.len(), groups));
+  }
   let descending = ascending == 0;
-  for t in 0..rows {
-    let mut eligible: Vec<usize> = Vec::with_capacity(groups);
-    for g in 0..groups {
-      let index = g * rows + t;
-      if is_normal(&input[index]) && (mask[index] > NumT::zero()) {
-        eligible.push(g);
+  let mut out_buf = vec![NumT::nan(); groups * rows];
+  use rayon::prelude::*;
+  out_buf
+    .par_chunks_mut(groups)
+    .enumerate()
+    .for_each(|(t, out_row)| {
+      let mut eligible: Vec<usize> = Vec::with_capacity(groups);
+      for g in 0..groups {
+        let index = g * rows + t;
+        if is_normal(&input[index]) && mask[index] > NumT::zero() {
+          eligible.push(g);
+        }
       }
-    }
-    if eligible.is_empty() {
-      continue;
-    }
-    eligible.sort_by(|a, b| {
-      let va = input[*a * rows + t];
-      let vb = input[*b * rows + t];
-      let base = va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal);
-      let base = if descending { base.reverse() } else { base };
-      if base == std::cmp::Ordering::Equal {
-        tiebreak[*a].partial_cmp(&tiebreak[*b]).unwrap_or(std::cmp::Ordering::Equal)
-      } else {
-        base
+      if eligible.is_empty() {
+        return;
+      }
+      eligible.sort_by(|a, b| {
+        let va = input[*a * rows + t];
+        let vb = input[*b * rows + t];
+        let base = va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal);
+        let base = if descending { base.reverse() } else { base };
+        if base == std::cmp::Ordering::Equal {
+          tiebreak[*a]
+            .partial_cmp(&tiebreak[*b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+          base
+        }
+      });
+      for (position, g) in eligible.iter().enumerate() {
+        out_row[*g] = NumT::from(position + 1).unwrap();
       }
     });
-    for (position, g) in eligible.iter().enumerate() {
-      r[*g * rows + t] = NumT::from(position + 1).unwrap();
-    }
-  }
+  from_rows(&out_buf, r, groups, rows);
   Ok(())
 }
 
@@ -238,78 +278,147 @@ pub fn ta_ft_zscore<NumT: Float + Send + Sync>(
   Ok(())
 }
 
-fn pair_rows<NumT: Float>(
-  rows: usize,
-  groups: usize,
-  left: &[NumT],
-  right: &[NumT],
-  t: usize,
-  rank: bool,
-) -> (Vec<NumT>, Vec<NumT>, Vec<usize>) {
-  let mut xs = Vec::with_capacity(groups);
-  let mut ys = Vec::with_capacity(groups);
-  let mut positions = Vec::with_capacity(groups);
-  for g in 0..groups {
-    let index = g * rows + t;
-    if is_normal(&left[index]) && is_normal(&right[index]) {
-      xs.push(left[index]);
-      ys.push(right[index]);
-      positions.push(index);
-    }
+fn pair_value<NumT: Float>(xs: &[NumT], ys: &[NumT], correlation: bool) -> Option<NumT> {
+  let n = xs.len();
+  if n < 2 {
+    return None;
   }
-  if rank && !xs.is_empty() {
-    let (_, rx) = average_ranks(&xs);
-    let (_, ry) = average_ranks(&ys);
-    xs = rx;
-    ys = ry;
+  let count = NumT::from(n).unwrap();
+  let mut sx = NumT::zero();
+  let mut sy = NumT::zero();
+  let mut sxx = NumT::zero();
+  let mut syy = NumT::zero();
+  let mut sxy = NumT::zero();
+  for i in 0..n {
+    sx = sx + xs[i];
+    sy = sy + ys[i];
+    sxx = sxx + xs[i] * xs[i];
+    syy = syy + ys[i] * ys[i];
+    sxy = sxy + xs[i] * ys[i];
   }
-  (xs, ys, positions)
+  finish_pair(sx, sy, sxx, syy, sxy, count, correlation)
+}
+
+fn finish_pair<NumT: Float>(
+  sx: NumT,
+  sy: NumT,
+  sxx: NumT,
+  syy: NumT,
+  sxy: NumT,
+  count: NumT,
+  correlation: bool,
+) -> Option<NumT> {
+  let centered = sxy - sx * sy / count;
+  if !correlation {
+    let covariance = centered / (count - NumT::one());
+    return covariance.is_finite().then_some(covariance);
+  }
+  let var_x = sxx - sx * sx / count;
+  let var_y = syy - sy * sy / count;
+  if !(var_x > NumT::zero()) || !(var_y > NumT::zero()) {
+    return None;
+  }
+  let value = centered / (var_x * var_y).sqrt();
+  value.is_finite().then_some(value)
 }
 
 fn pair_stat<NumT: Float + Send + Sync>(
-  ctx: &Context, r: &mut [NumT], left: &[NumT], right: &[NumT], correlation: bool, rank: bool,
+  ctx: &Context,
+  r: &mut [NumT],
+  left: &[NumT],
+  right: &[NumT],
+  correlation: bool,
+  rank: bool,
 ) -> Result<(), Error> {
   if r.len() != left.len() || left.len() != right.len() {
     return Err(Error::LengthMismatch(left.len(), right.len()));
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(left.len(), ctx.groups());
-  for t in 0..rows {
-    let (xs, ys, positions) = pair_rows(rows, groups, left, right, t, rank);
-    let n = xs.len();
-    if n < 2 {
-      continue;
-    }
-    let count = NumT::from(n).unwrap();
-    let mut sx = NumT::zero();
-    let mut sy = NumT::zero();
-    let mut sxx = NumT::zero();
-    let mut syy = NumT::zero();
-    let mut sxy = NumT::zero();
-    for i in 0..n {
-      sx = sx + xs[i];
-      sy = sy + ys[i];
-      sxx = sxx + xs[i] * xs[i];
-      syy = syy + ys[i] * ys[i];
-      sxy = sxy + xs[i] * ys[i];
-    }
-    let covariance = (sxy - sx * sy / count) / (count - NumT::one());
-    if !correlation {
-      for position in &positions {
-        r[*position] = covariance;
-      }
-      continue;
-    }
-    let var_x = sxx - sx * sx / count;
-    let var_y = syy - sy * sy / count;
-    if !(var_x > NumT::zero()) || !(var_y > NumT::zero()) {
-      continue;
-    }
-    let value = (sxy - sx * sy / count) / (var_x * var_y).sqrt();
-    for position in &positions {
-      r[*position] = value;
-    }
+  if groups == 0 || rows == 0 {
+    return Ok(());
   }
+  // 每个时间步只读输入、只写自己的输出行：读跨步、写连续，无锁并行。
+  // 不做整面板转置，省掉两次 (N, T) 拷贝；Pearson/cov 单遍累加，避免逐行分配。
+  let mut out_buf = vec![NumT::nan(); groups * rows];
+  use rayon::prelude::*;
+  out_buf
+    .par_chunks_mut(groups)
+    .enumerate()
+    .for_each(|(t, orow)| {
+      if rank {
+        // Spearman：先秩化（inf 变成有限秩），再对秩做 Pearson。
+        let mut xs: Vec<NumT> = Vec::with_capacity(groups);
+        let mut ys: Vec<NumT> = Vec::with_capacity(groups);
+        let mut positions: Vec<usize> = Vec::with_capacity(groups);
+        for g in 0..groups {
+          let index = g * rows + t;
+          let x = left[index];
+          let y = right[index];
+          if is_normal(&x) && is_normal(&y) {
+            xs.push(x);
+            ys.push(y);
+            positions.push(g);
+          }
+        }
+        let n = xs.len();
+        if n < 2 {
+          return;
+        }
+        let (_, rx) = average_ranks(&xs);
+        let (_, ry) = average_ranks(&ys);
+        if let Some(value) = pair_value(&rx, &ry, correlation) {
+          for position in &positions {
+            orow[*position] = value;
+          }
+        }
+        return;
+      }
+      // Pearson/cov：单遍累加。
+      let mut n = 0usize;
+      let mut sx = NumT::zero();
+      let mut sy = NumT::zero();
+      let mut sxx = NumT::zero();
+      let mut syy = NumT::zero();
+      let mut sxy = NumT::zero();
+      for g in 0..groups {
+        let index = g * rows + t;
+        let x = left[index];
+        let y = right[index];
+        if is_normal(&x) && is_normal(&y) {
+          n += 1;
+          sx = sx + x;
+          sy = sy + y;
+          sxx = sxx + x * x;
+          syy = syy + y * y;
+          sxy = sxy + x * y;
+        }
+      }
+      if n < 2 {
+        return;
+      }
+      // pandas 的 notna 路径把 ±inf 当已观测，整行 Pearson/cov 因此是 NaN；
+      // 内核用同一口径：累加量非有限时整行保持 NaN。
+      if !(sx.is_finite()
+        && sy.is_finite()
+        && sxx.is_finite()
+        && syy.is_finite()
+        && sxy.is_finite())
+      {
+        return;
+      }
+      let count = NumT::from(n).unwrap();
+      let Some(value) = finish_pair(sx, sy, sxx, syy, sxy, count, correlation) else {
+        return;
+      };
+      for g in 0..groups {
+        let index = g * rows + t;
+        if is_normal(&left[index]) && is_normal(&right[index]) {
+          orow[g] = value;
+        }
+      }
+    });
+  from_rows(&out_buf, r, groups, rows);
   Ok(())
 }
 
@@ -436,103 +545,118 @@ pub fn ta_ft_residualize<NumT: Float + Send + Sync>(
   mask: &[NumT],
   exposure_count: usize,
 ) -> Result<(), Error> {
-  if r.len() != signal.len() || mask.len() != signal.len() {
-    return Err(Error::LengthMismatch(r.len(), signal.len()));
+  if r.len() != signal.len()
+    || mask.len() != signal.len()
+    || exposure1.len() != signal.len()
+    || exposure2.len() != signal.len()
+    || exposure3.len() != signal.len()
+  {
+    return Err(Error::LengthMismatch(signal.len(), r.len()));
   }
   let k = exposure_count.min(3);
   r.fill(NumT::nan());
   let (groups, rows) = layout(signal.len(), ctx.groups());
-  for t in 0..rows {
-    let mut ys: Vec<NumT> = Vec::new();
-    let mut rows_x: Vec<[NumT; 3]> = Vec::new();
-    let mut positions: Vec<usize> = Vec::new();
-    for g in 0..groups {
-      let index = g * rows + t;
-      if !(mask[index] > NumT::zero()) || !is_normal(&signal[index]) {
-        continue;
-      }
-      let x1 = exposure1[index];
-      if !is_normal(&x1) {
-        continue;
-      }
-      let mut values = [NumT::zero(); 3];
-      values[0] = x1;
-      if k >= 2 {
-        if !is_normal(&exposure2[index]) {
-          continue;
-        }
-        values[1] = exposure2[index];
-      }
-      if k >= 3 {
-        if !is_normal(&exposure3[index]) {
-          continue;
-        }
-        values[2] = exposure3[index];
-      }
-      ys.push(signal[index]);
-      rows_x.push(values);
-      positions.push(index);
-    }
-    let n = ys.len();
-    if n <= k + 1 {
-      continue;
-    }
-    // normal equations for [1, x1..xk]
-    let size = k + 1;
-    let mut xtx = vec![vec![NumT::zero(); size]; size];
-    let mut xty = vec![NumT::zero(); size];
-    for (i, y) in ys.iter().enumerate() {
-      let mut row = [NumT::zero(); 3];
-      row[0] = NumT::one();
-      for j in 0..k {
-        row[j + 1] = rows_x[i][j];
-      }
-      for a in 0..size {
-        xty[a] = xty[a] + row[a] * *y;
-        for b in 0..size {
-          xtx[a][b] = xtx[a][b] + row[a] * row[b];
-        }
-      }
-    }
-    // gaussian elimination with partial pivoting
-    for col in 0..size {
-      let mut pivot = col;
-      for row in col + 1..size {
-        if xtx[row][col].abs() > xtx[pivot][col].abs() {
-          pivot = row;
-        }
-      }
-      if !(xtx[pivot][col].abs() > NumT::from(1e-18).unwrap()) {
-        continue;
-      }
-      xtx.swap(col, pivot);
-      xty.swap(col, pivot);
-      let diag = xtx[col][col];
-      for b in col..size {
-        xtx[col][b] = xtx[col][b] / diag;
-      }
-      xty[col] = xty[col] / diag;
-      for row in 0..size {
-        if row == col {
-          continue;
-        }
-        let factor = xtx[row][col];
-        if factor == NumT::zero() {
-          continue;
-        }
-        for b in col..size {
-          xtx[row][b] = xtx[row][b] - factor * xtx[col][b];
-        }
-        xty[row] = xty[row] - factor * xty[col];
-      }
-    }
-    for (i, position) in positions.iter().enumerate() {
-      let mut fitted = xty[0];
-      for j in 0..k {
-        fitted = fitted + xty[j + 1] * rows_x[i][j];
-      }
-      r[*position] = ys[i] - fitted;
-    }
+  if groups == 0 || rows == 0 {
+    return Ok(());
   }
+  let mut out_buf = vec![NumT::nan(); groups * rows];
+  use rayon::prelude::*;
+  out_buf
+    .par_chunks_mut(groups)
+    .enumerate()
+    .for_each(|(t, orow)| {
+      let mut ys: Vec<NumT> = Vec::with_capacity(groups);
+      let mut rows_x: Vec<[NumT; 3]> = Vec::with_capacity(groups);
+      let mut positions: Vec<usize> = Vec::with_capacity(groups);
+      for g in 0..groups {
+        let index = g * rows + t;
+        if !(mask[index] > NumT::zero()) || !signal[index].is_finite() {
+          continue;
+        }
+        let x1 = exposure1[index];
+        if !x1.is_finite() {
+          continue;
+        }
+        let mut values = [NumT::zero(); 3];
+        values[0] = x1;
+        if k >= 2 {
+          if !exposure2[index].is_finite() {
+            continue;
+          }
+          values[1] = exposure2[index];
+        }
+        if k >= 3 {
+          if !exposure3[index].is_finite() {
+            continue;
+          }
+          values[2] = exposure3[index];
+        }
+        ys.push(signal[index]);
+        rows_x.push(values);
+        positions.push(g);
+      }
+      let n = ys.len();
+      if n <= k + 1 {
+        return;
+      }
+      // normal equations for [1, x1..xk]
+      let size = k + 1;
+      let mut xtx = vec![vec![NumT::zero(); size]; size];
+      let mut xty = vec![NumT::zero(); size];
+      for (i, y) in ys.iter().enumerate() {
+        // size = k + 1, so the design row needs room for up to 1 + 3 terms.
+        let mut row = [NumT::zero(); 4];
+        row[0] = NumT::one();
+        for j in 0..k {
+          row[j + 1] = rows_x[i][j];
+        }
+        for a in 0..size {
+          xty[a] = xty[a] + row[a] * *y;
+          for b in 0..size {
+            xtx[a][b] = xtx[a][b] + row[a] * row[b];
+          }
+        }
+      }
+      // gaussian elimination with partial pivoting
+      for col in 0..size {
+        let mut pivot = col;
+        for row in col + 1..size {
+          if xtx[row][col].abs() > xtx[pivot][col].abs() {
+            pivot = row;
+          }
+        }
+        if !(xtx[pivot][col].abs() > NumT::from(1e-18).unwrap()) {
+          continue;
+        }
+        xtx.swap(col, pivot);
+        xty.swap(col, pivot);
+        let diag = xtx[col][col];
+        for b in col..size {
+          xtx[col][b] = xtx[col][b] / diag;
+        }
+        xty[col] = xty[col] / diag;
+        for row in 0..size {
+          if row == col {
+            continue;
+          }
+          let factor = xtx[row][col];
+          if factor == NumT::zero() {
+            continue;
+          }
+          for b in col..size {
+            xtx[row][b] = xtx[row][b] - factor * xtx[col][b];
+          }
+          xty[row] = xty[row] - factor * xty[col];
+        }
+      }
+      for (i, position) in positions.iter().enumerate() {
+        let mut fitted = xty[0];
+        for j in 0..k {
+          fitted = fitted + xty[j + 1] * rows_x[i][j];
+        }
+        orow[*position] = ys[i] - fitted;
+      }
+    });
+  from_rows(&out_buf, r, groups, rows);
   Ok(())
 }
