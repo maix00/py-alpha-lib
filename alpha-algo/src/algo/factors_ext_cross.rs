@@ -98,24 +98,40 @@ pub fn ta_ft_rank_masked<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
-  for t in 0..rows {
-    let mut values = Vec::with_capacity(groups);
-    let mut positions = Vec::with_capacity(groups);
-    for g in 0..groups {
-      let index = g * rows + t;
-      let v = input[index];
-      if is_normal(&v) && (mask[index] > NumT::zero()) {
-        values.push(v);
-        positions.push(index);
+  let mut values_buf = vec![NumT::nan(); groups * rows];
+  let mut mask_buf = vec![NumT::zero(); groups * rows];
+  for g in 0..groups {
+    for t in 0..rows {
+      values_buf[t * groups + g] = input[g * rows + t];
+      mask_buf[t * groups + g] = mask[g * rows + t];
+    }
+  }
+  use rayon::prelude::*;
+  values_buf
+    .par_chunks_mut(groups)
+    .zip(mask_buf.par_chunks(groups))
+    .for_each(|(row, mask_row)| {
+      let mut values = Vec::with_capacity(groups);
+      let mut positions = Vec::with_capacity(groups);
+      for g in 0..groups {
+        let v = row[g];
+        if is_normal(&v) && mask_row[g] > NumT::zero() {
+          values.push(v);
+          positions.push(g);
+        }
       }
-    }
-    if values.is_empty() {
-      continue;
-    }
-    let (_, ranks) = average_ranks(&values);
-    let count = NumT::from(values.len()).unwrap();
-    for (index, position) in positions.iter().enumerate() {
-      r[*position] = ranks[index] / count - NumT::from(0.5).unwrap();
+      if values.is_empty() {
+        return;
+      }
+      let (_, ranks) = average_ranks(&values);
+      let count = NumT::from(values.len()).unwrap();
+      for (index, g) in positions.iter().enumerate() {
+        row[*g] = ranks[index] / count - NumT::from(0.5).unwrap();
+      }
+    });
+  for g in 0..groups {
+    for t in 0..rows {
+      r[g * rows + t] = values_buf[t * groups + g];
     }
   }
   Ok(())
