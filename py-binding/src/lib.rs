@@ -222,6 +222,15 @@ impl EventHeap {
     }));
   }
 
+  fn push_with_counter(&mut self, timestamp: i64, kind: i32, sequence: i32, counter: u64, payload: Py<PyAny>) {
+    self.heap.push(std::cmp::Reverse(EventHeapEntry {
+      timestamp, kind, sequence, counter, payload,
+    }));
+    if counter >= self.counter {
+      self.counter = counter + 1;
+    }
+  }
+
   fn pop(&mut self, py: Python<'_>) -> Option<(i64, i32, i32, u64, Py<PyAny>)> {
     self.heap.pop().map(|std::cmp::Reverse(entry)| {
       (entry.timestamp, entry.kind, entry.sequence, entry.counter, entry.payload.clone_ref(py))
