@@ -41,6 +41,10 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - INTERCEPT(input: np.ndarray[float], periods: int): Linear Regression Intercept  Calculates the intercept of the linear regression line for a moving window.
 - KURTOSIS(input: np.ndarray[float], periods: int): Calculate rolling sample excess Kurtosis over a moving window  Uses adjusted Fisher formula (matches pandas): kurt = n(n+1)/((n-1)(n-2)(n-3)) * sum(((x-mean)/std)^4) - 3(n-1)^2/((n-2)(n-3)) Requires at least 4 valid values.
 - LAST(condition: np.ndarray[bool]): Count consecutive periods where condition is true up to the current bar  LAST(cond)
+- LINREG_R2(input: np.ndarray[float], periods: int, min_count: int): Rolling OLS R-squared against the bar index over the trailing `periods` window.  `1 - SSE/SST`; windows with zero total variance yield NaN.
+- LINREG_RESID_STD(input: np.ndarray[float], periods: int, min_count: int): Rolling OLS residual standard deviation against the bar index.  `sqrt(SSE/(n-2))` over the trailing window.
+- LINREG_SLOPE(input: np.ndarray[float], periods: int, min_count: int): Rolling OLS slope against the bar index over the trailing `periods` window.  Mirrors FactorTester's sufficient-statistics implementation: only finite values participate, x is the absolute bar position, and a window is eligible when it has at least `max(3, min_count)` points with non-zero centered x variance.
+- LINREG_TSTAT(input: np.ndarray[float], periods: int, min_count: int): Rolling OLS slope t-statistic against the bar index over the trailing window.  `slope / sqrt((SSE/(n-2)) / Sxx)`; degenerate windows yield NaN.
 - LLV(input: np.ndarray[float], periods: int): Find lowest value in a preceding `periods` window
 - LLV_V(input: np.ndarray[float], periods: np.ndarray[int]): Find lowest value in a preceding variable `periods` window
 - LLVBARS(input: np.ndarray[float], periods: int): The number of periods that have passed since the array reached its periods period low
@@ -50,8 +54,10 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - LWMA_V(input: np.ndarray[float], periods: np.ndarray[int]): Linear Weighted Moving Average with variable periods  LWMA = SUM(Price * Weight) / SUM(Weight)
 - MA(input: np.ndarray[float], periods: int): Simple Moving Average, also known as arithmetic moving average
 - MA_V(input: np.ndarray[float], periods: np.ndarray[int]): Simple Moving Average with variable periods
+- MAD(input: np.ndarray[float], periods: int, min_count: int): Rolling median absolute deviation: median(|x - median(window)|).
 - MAX(a: np.ndarray[float], b: np.ndarray[float]): Calculate element-wise maximum of two arrays  MAX(a, b) = max(a, b)
 - MAX_DRAWDOWN(input: np.ndarray[float], periods: int): Rolling Maximum Drawdown.  MaxDrawdown = minimum peak-to-trough decline within the rolling window. Result is expressed as a negative return (e.g. -0.2 means 20% drawdown from peak). Input should be a price or equity curve series.
+- MEDIAN(input: np.ndarray[float], periods: int, min_count: int): Rolling median with an explicit minimum valid count.
 - MIN(a: np.ndarray[float], b: np.ndarray[float]): Calculate element-wise minimum of two arrays  MIN(a, b) = min(a, b)
 - MIN_MAX_DIFF(input: np.ndarray[float], periods: int): Calculate rolling min-max difference (range) over a moving window  TS_MIN_MAX_DIFF = TS_MAX(x, d) - TS_MIN(x, d) Single-pass using two monotonic deques for efficiency.
 - MOMENT(input: np.ndarray[float], periods: int, k: int): Calculate rolling k-th central moment over a moving window  MOMENT(x, d, k) = mean((x - mean)^k) over window of d periods. This is the raw (non-adjusted) sample moment. k=2 gives variance (population), k=3 gives raw third moment, etc.

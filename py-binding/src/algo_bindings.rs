@@ -3108,6 +3108,434 @@
       Err(PyValueError::new_err("invalid input"))
     }
   }
+  /// Rolling OLS R-squared against the bar index over the trailing `periods` window.
+  #[pyfunction]
+  fn linreg_r2<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_linreg_r2(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_linreg_r2(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_r2(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_r2(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
+  /// Rolling OLS residual standard deviation against the bar index.
+  #[pyfunction]
+  fn linreg_resid_std<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_linreg_resid_std(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_linreg_resid_std(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_resid_std(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_resid_std(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
+  /// Rolling OLS slope against the bar index over the trailing `periods` window.
+  #[pyfunction]
+  fn linreg_slope<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_linreg_slope(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_linreg_slope(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_slope(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_slope(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
+  /// Rolling OLS slope t-statistic against the bar index over the trailing window.
+  #[pyfunction]
+  fn linreg_tstat<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_linreg_tstat(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_linreg_tstat(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_tstat(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_linreg_tstat(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
   /// Find lowest value in a preceding `periods` window
   #[pyfunction]
   fn llv<'py>(
@@ -3842,6 +4270,113 @@
       } else { Err(PyValueError::new_err("invalid input list")) }
     } else { Err(PyValueError::new_err("invalid input (expected float, float, int)")) }
   }
+  /// Rolling median absolute deviation: median(|x - median(window)|).
+  #[pyfunction]
+  fn mad<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_mad(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_mad(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_mad(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_mad(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
   /// Calculate element-wise maximum of two arrays
   #[pyfunction]
   fn max<'py>(
@@ -4004,6 +4539,113 @@
             let input = input.as_slice();
             if let Some((r, input)) = r.zip(input) {
               ta_max_drawdown(&ctx, r, input, periods).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
+  /// Rolling median with an explicit minimum valid count.
+  #[pyfunction]
+  fn median<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    periods: usize,
+    min_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_median(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_median(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_median(&ctx, r, input, periods, min_count).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_median(&ctx, r, input, periods, min_count).map_err(|e| e.into())
             } else {
               Err(PyValueError::new_err("invalid input"))
             }
@@ -6434,6 +7076,10 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(intercept, m)?)?;
   m.add_function(wrap_pyfunction!(kurtosis, m)?)?;
   m.add_function(wrap_pyfunction!(last, m)?)?;
+  m.add_function(wrap_pyfunction!(linreg_r2, m)?)?;
+  m.add_function(wrap_pyfunction!(linreg_resid_std, m)?)?;
+  m.add_function(wrap_pyfunction!(linreg_slope, m)?)?;
+  m.add_function(wrap_pyfunction!(linreg_tstat, m)?)?;
   m.add_function(wrap_pyfunction!(llv, m)?)?;
   m.add_function(wrap_pyfunction!(llv_v, m)?)?;
   m.add_function(wrap_pyfunction!(llvbars, m)?)?;
@@ -6443,8 +7089,10 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(lwma_v, m)?)?;
   m.add_function(wrap_pyfunction!(ma, m)?)?;
   m.add_function(wrap_pyfunction!(ma_v, m)?)?;
+  m.add_function(wrap_pyfunction!(mad, m)?)?;
   m.add_function(wrap_pyfunction!(max, m)?)?;
   m.add_function(wrap_pyfunction!(max_drawdown, m)?)?;
+  m.add_function(wrap_pyfunction!(median, m)?)?;
   m.add_function(wrap_pyfunction!(min, m)?)?;
   m.add_function(wrap_pyfunction!(min_max_diff, m)?)?;
   m.add_function(wrap_pyfunction!(moment, m)?)?;

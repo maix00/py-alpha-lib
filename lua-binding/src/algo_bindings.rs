@@ -316,6 +316,38 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "LINREG_R2",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_linreg_r2::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "LINREG_RESID_STD",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_linreg_resid_std::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "LINREG_SLOPE",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_linreg_slope::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "LINREG_TSTAT",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_linreg_tstat::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "LLV",
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
@@ -392,6 +424,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "MAD",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_mad::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "MAX",
       lua.create_function(|lua, (a, b): (NumArray, NumArray)| {
         let mut r = vec![0.0; a.len()];
@@ -404,6 +444,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_max_drawdown::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "MEDIAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_median::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;

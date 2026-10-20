@@ -828,6 +828,85 @@ def LAST[A: np.ndarray | list[np.ndarray]](
     _algo.last(r, condition)
     return r
 
+def LINREG_R2[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling OLS R-squared against the bar index over the trailing `periods` window.
+  
+  `1 - SSE/SST`; windows with zero total variance yield NaN.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.linreg_r2(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.linreg_r2(r, input, periods, min_count)
+    return r
+
+def LINREG_RESID_STD[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling OLS residual standard deviation against the bar index.
+  
+  `sqrt(SSE/(n-2))` over the trailing window.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.linreg_resid_std(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.linreg_resid_std(r, input, periods, min_count)
+    return r
+
+def LINREG_SLOPE[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling OLS slope against the bar index over the trailing `periods` window.
+  
+  Mirrors FactorTester's sufficient-statistics implementation: only finite
+  values participate, x is the absolute bar position, and a window is
+  eligible when it has at least `max(3, min_count)` points with non-zero
+  centered x variance.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.linreg_slope(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.linreg_slope(r, input, periods, min_count)
+    return r
+
+def LINREG_TSTAT[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling OLS slope t-statistic against the bar index over the trailing window.
+  
+  `slope / sqrt((SSE/(n-2)) / Sxx)`; degenerate windows yield NaN.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.linreg_tstat(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.linreg_tstat(r, input, periods, min_count)
+    return r
+
 def LLV[A: np.ndarray | list[np.ndarray]](
   input: A, periods: int
 ) -> A:
@@ -1007,6 +1086,23 @@ def MA_V[A: np.ndarray | list[np.ndarray]](
     _algo.ma_v(r, input, periods)
     return r
 
+def MAD[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling median absolute deviation: median(|x - median(window)|).
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.mad(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.mad(r, input, periods, min_count)
+    return r
+
 def MAX[A: np.ndarray | list[np.ndarray]](
   a: A, b: A
 ) -> A:
@@ -1049,6 +1145,23 @@ def MAX_DRAWDOWN[A: np.ndarray | list[np.ndarray]](
     input = _to_f64(input)
     r = np.empty_like(input)
     _algo.max_drawdown(r, input, periods)
+    return r
+
+def MEDIAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling median with an explicit minimum valid count.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.median(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.median(r, input, periods, min_count)
     return r
 
 def MIN[A: np.ndarray | list[np.ndarray]](
