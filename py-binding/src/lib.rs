@@ -175,6 +175,58 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct LedgerAccount {
+  cash: f64,
+  positions: std::collections::HashMap<String, (f64, f64)>,
+}
+
+#[pymethods]
+impl LedgerAccount {
+  #[new]
+  fn new(cash: f64) -> Self {
+    Self { cash, positions: std::collections::HashMap::new() }
+  }
+
+  fn apply_fill(
+    &mut self, product: &str, quantity: f64, price: f64,
+    multiplier: f64, fee: f64,
+  ) -> f64 {
+    let (prior_quantity, prior_cost) = self.positions
+      .get(product).copied().unwrap_or((0.0, 0.0));
+    let new_quantity = prior_quantity + quantity;
+    let epsilon = 1e-12;
+    let mut realized = 0.0;
+    let mut new_cost = prior_cost;
+    if prior_quantity == 0.0 || (prior_quantity > 0.0) == (quantity > 0.0) {
+      new_cost = if new_quantity.abs() <= epsilon {
+        0.0
+      } else {
+        (prior_quantity * prior_cost + quantity * price) / new_quantity
+      };
+    } else {
+      let close_abs = prior_quantity.abs().min(quantity.abs());
+      realized = close_abs * (price - prior_cost) * prior_quantity.signum() * multiplier;
+      if new_quantity.abs() <= epsilon {
+        new_cost = 0.0;
+      } else if quantity.abs() > prior_quantity.abs() {
+        new_cost = price;
+      }
+    }
+    let quantity = if new_quantity.abs() <= epsilon { 0.0 } else { new_quantity };
+    self.positions.insert(product.to_string(), (quantity, new_cost));
+    self.cash += realized - fee;
+    realized
+  }
+
+  fn position(&self, product: &str) -> (f64, f64) {
+    self.positions.get(product).copied().unwrap_or((0.0, 0.0))
+  }
+
+  #[getter]
+  fn cash(&self) -> f64 { self.cash }
+}
+
+#[pyclass(unsendable)]
 pub struct MarketDataMatrix {
   timestamps: Vec<i64>,
   values: Vec<f64>,
@@ -355,6 +407,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(set_ctx, m)?)?;
   m.add_class::<EventHeap>()?;
   m.add_class::<MarketDataMatrix>()?;
+  m.add_class::<LedgerAccount>()?;
   register_functions(m)?;
   Ok(())
 }
