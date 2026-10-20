@@ -171,48 +171,52 @@ pub fn ta_ft_zscore<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
-  for t in 0..rows {
+  let mut buffer = vec![NumT::nan(); groups * rows];
+  for g in 0..groups {
+    for t in 0..rows {
+      buffer[t * groups + g] = input[g * rows + t];
+    }
+  }
+  use rayon::prelude::*;
+  buffer.par_chunks_mut(groups).for_each(|row| {
     let mut sum = NumT::zero();
     let mut count = 0usize;
-    for g in 0..groups {
-      let v = input[g * rows + t];
-      if is_normal(&v) {
-        sum = sum + v;
+    for value in row.iter() {
+      if is_normal(value) {
+        sum = sum + *value;
         count += 1;
       }
     }
     if count == 0 {
-      continue;
+      return;
     }
     let n = NumT::from(count).unwrap();
     let mean = sum / n;
     if count == 1 {
-      for g in 0..groups {
-        let index = g * rows + t;
-        if is_normal(&input[index]) {
-          r[index] = NumT::zero();
+      for value in row.iter_mut() {
+        if is_normal(value) {
+          *value = NumT::zero();
         }
       }
-      continue;
+      return;
     }
     let mut m2 = NumT::zero();
-    for g in 0..groups {
-      let v = input[g * rows + t];
-      if is_normal(&v) {
-        let d = v - mean;
+    for value in row.iter() {
+      if is_normal(value) {
+        let d = *value - mean;
         m2 = m2 + d * d;
       }
     }
     let std = (m2 / (n - NumT::one())).sqrt();
-    for g in 0..groups {
-      let index = g * rows + t;
-      if is_normal(&input[index]) {
-        r[index] = if std > NumT::zero() {
-          (input[index] - mean) / std
-        } else {
-          NumT::zero()
-        };
+    for value in row.iter_mut() {
+      if is_normal(value) {
+        *value = if std > NumT::zero() { (*value - mean) / std } else { NumT::zero() };
       }
+    }
+  });
+  for g in 0..groups {
+    for t in 0..rows {
+      r[g * rows + t] = buffer[t * groups + g];
     }
   }
   Ok(())
