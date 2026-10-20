@@ -354,6 +354,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_RUN_PLAN",
+      lua.create_function(|lua, (slots, plan, params, slot_count, op_count, leaf_count): (NumArray, NumArray, NumArray, usize, usize, usize)| {
+        let mut r = vec![0.0; slots.len()];
+        ta_ft_run_plan::<f64>(&ctx(lua), &mut r, &slots, &plan, &params, slot_count, op_count, leaf_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_SCOPE_AGG",
       lua.create_function(|lua, (input, keys, min_count, op, quantile): (NumArray, NumArray, usize, usize, f64)| {
         let mut r = vec![0.0; input.len()];

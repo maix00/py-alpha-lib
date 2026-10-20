@@ -3418,6 +3418,52 @@
       ta_ft_residualize(&ctx, r, signal, exposure1, exposure2, exposure3, mask, exposure_count).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Run a compiled plan over `(groups, rows)` slot panels.
+  #[pyfunction]
+  fn ft_run_plan<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    slots: &'py Bound<'_, PyAny>,
+    plan: &'py Bound<'_, PyAny>,
+    params: &'py Bound<'_, PyAny>,
+    slot_count: usize,
+    op_count: usize,
+    leaf_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, slots), plan), params)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(slots.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(plan.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(params.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let slots = slots.as_array();
+      let slots = slots.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let plan = plan.as_array();
+      let plan = plan.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let params = params.as_array();
+      let params = params.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_run_plan(&ctx, r, slots, plan, params, slot_count, op_count, leaf_count).map_err(|e| e.into())
+    } else if let Some((((mut r, slots), plan), params)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(slots.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(plan.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(params.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let slots = slots.as_array();
+      let slots = slots.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let plan = plan.as_array();
+      let plan = plan.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let params = params.as_array();
+      let params = params.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_run_plan(&ctx, r, slots, plan, params, slot_count, op_count, leaf_count).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Scope-partitioned expanding aggregation with `min_count` valid observations.
   #[pyfunction]
   fn ft_scope_agg<'py>(
@@ -9427,6 +9473,7 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_rank, m)?)?;
   m.add_function(wrap_pyfunction!(ft_rank_masked, m)?)?;
   m.add_function(wrap_pyfunction!(ft_residualize, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_run_plan, m)?)?;
   m.add_function(wrap_pyfunction!(ft_scope_agg, m)?)?;
   m.add_function(wrap_pyfunction!(ft_spearman, m)?)?;
   m.add_function(wrap_pyfunction!(ft_zscore, m)?)?;

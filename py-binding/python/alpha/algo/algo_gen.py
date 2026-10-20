@@ -907,6 +907,31 @@ def FT_RESIDUALIZE[A: np.ndarray | list[np.ndarray]](
     _algo.ft_residualize(r, signal, exposure1, exposure2, exposure3, mask, exposure_count)
     return r
 
+def FT_RUN_PLAN[A: np.ndarray | list[np.ndarray]](
+  slots: A, plan: A, params: A, slot_count: int, op_count: int, leaf_count: int
+) -> A:
+  """
+  Run a compiled plan over `(groups, rows)` slot panels.
+  
+  `slots` carries the input panels; the returned buffer starts as a copy of
+  them so the executor can write every intermediate in place. `plan` and
+  `params` are flat tables of four fields per op (see the module comment).
+  """
+  if isinstance(slots, list) and isinstance(plan, list) and isinstance(params, list):
+    slots = [_to_f64(x) for x in slots]
+    plan = [_to_f64(x) for x in plan]
+    params = [_to_f64(x) for x in params]
+    r = [np.empty_like(x) for x in slots]
+    _algo.ft_run_plan(r, slots, plan, params, slot_count, op_count, leaf_count)
+    return r
+  else:
+    slots = _to_f64(slots)
+    plan = _to_f64(plan)
+    params = _to_f64(params)
+    r = np.empty_like(slots)
+    _algo.ft_run_plan(r, slots, plan, params, slot_count, op_count, leaf_count)
+    return r
+
 def FT_SCOPE_AGG[A: np.ndarray | list[np.ndarray]](
   input: A, keys: A, min_count: int, op: int, quantile: float
 ) -> A:
