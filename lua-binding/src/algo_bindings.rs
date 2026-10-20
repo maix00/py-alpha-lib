@@ -330,6 +330,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_EXEC_POSITIONS",
+      lua.create_function(|lua, (indices, offsets, query, _delay): (NumArray, NumArray, f64, usize)| {
+        let mut r = vec![0.0; indices.len()];
+        ta_ft_exec_positions::<f64>(&ctx(lua), &mut r, &indices, &offsets, query, _delay)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_GROUP",
       lua.create_function(|lua, (input, mask, category, op): (NumArray, NumArray, NumArray, usize)| {
         let mut r = vec![0.0; input.len()];

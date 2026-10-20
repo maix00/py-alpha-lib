@@ -852,6 +852,30 @@ def FT_DYNAMIC_MASK[A: np.ndarray | list[np.ndarray]](
     _algo.ft_dynamic_mask(r, input, starts, ends, period)
     return r
 
+def FT_EXEC_POSITIONS[A: np.ndarray | list[np.ndarray]](
+  indices: A, offsets: A, query: float, _delay: int
+) -> A:
+  """
+  Batch searchsorted-left over ragged sorted index arrays.
+  
+  ``indices`` is the concatenation of per-product index values (relative to
+  ``query``); ``offsets`` has P+1 entries. For each product the first position
+  with index >= query is returned, or -1 when the product has no such bar.
+  The caller adds the execution delay and constructs timestamps.
+  """
+  if isinstance(indices, list) and isinstance(offsets, list):
+    indices = [_to_f64(x) for x in indices]
+    offsets = [_to_f64(x) for x in offsets]
+    r = [np.empty_like(x) for x in indices]
+    _algo.ft_exec_positions(r, indices, offsets, query, _delay)
+    return r
+  else:
+    indices = _to_f64(indices)
+    offsets = _to_f64(offsets)
+    r = np.empty_like(indices)
+    _algo.ft_exec_positions(r, indices, offsets, query, _delay)
+    return r
+
 def FT_GROUP[A: np.ndarray | list[np.ndarray]](
   input: A, mask: A, category: A, op: int
 ) -> A:
