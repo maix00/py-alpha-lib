@@ -298,6 +298,22 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_CURVE_FIT",
+      lua.create_function(|lua, (values, days, lengths, depth, op): (NumArray, NumArray, NumArray, usize, usize)| {
+        let mut r = vec![0.0; values.len()];
+        ta_ft_curve_fit::<f64>(&ctx(lua), &mut r, &values, &days, &lengths, depth, op)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_CURVE_PAIR",
+      lua.create_function(|lua, (values, days, lengths, near, far, op): (NumArray, NumArray, NumArray, usize, usize, usize)| {
+        let mut r = vec![0.0; values.len()];
+        ta_ft_curve_pair::<f64>(&ctx(lua), &mut r, &values, &days, &lengths, near, far, op)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_GROUP",
       lua.create_function(|lua, (input, mask, category, op): (NumArray, NumArray, NumArray, usize)| {
         let mut r = vec![0.0; input.len()];

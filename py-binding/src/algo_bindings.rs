@@ -3004,6 +3004,97 @@
       } else { Err(PyValueError::new_err("invalid input list")) }
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Polynomial fit over the first `depth` valid (days, value) pairs:
+  #[pyfunction]
+  fn ft_curve_fit<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    values: &'py Bound<'_, PyAny>,
+    days: &'py Bound<'_, PyAny>,
+    lengths: &'py Bound<'_, PyAny>,
+    depth: usize,
+    op: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, values), days), lengths)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(values.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(days.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(lengths.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let values = values.as_array();
+      let values = values.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let days = days.as_array();
+      let days = days.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lengths = lengths.as_array();
+      let lengths = lengths.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_curve_fit(&ctx, r, values, days, lengths, depth, op).map_err(|e| e.into())
+    } else if let Some((((mut r, values), days), lengths)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(values.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(days.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(lengths.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let values = values.as_array();
+      let values = values.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let days = days.as_array();
+      let days = days.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lengths = lengths.as_array();
+      let lengths = lengths.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_curve_fit(&ctx, r, values, days, lengths, depth, op).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Pairwise curve op: 0 spread, 1 ratio, 2 log-ratio, 3 contango,
+  #[pyfunction]
+  fn ft_curve_pair<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    values: &'py Bound<'_, PyAny>,
+    days: &'py Bound<'_, PyAny>,
+    lengths: &'py Bound<'_, PyAny>,
+    near: usize,
+    far: usize,
+    op: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, values), days), lengths)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(values.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(days.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(lengths.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let values = values.as_array();
+      let values = values.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let days = days.as_array();
+      let days = days.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lengths = lengths.as_array();
+      let lengths = lengths.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_curve_pair(&ctx, r, values, days, lengths, near, far, op).map_err(|e| e.into())
+    } else if let Some((((mut r, values), days), lengths)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(values.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(days.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(lengths.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let values = values.as_array();
+      let values = values.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let days = days.as_array();
+      let days = days.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let lengths = lengths.as_array();
+      let lengths = lengths.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_curve_pair(&ctx, r, values, days, lengths, near, far, op).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Category-partitioned cross-sectional transform: 0 = rank, 1 = z-score,
   #[pyfunction]
   fn ft_group<'py>(
@@ -9329,6 +9420,8 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(fret, m)?)?;
   m.add_function(wrap_pyfunction!(ft_corr, m)?)?;
   m.add_function(wrap_pyfunction!(ft_cov, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_curve_fit, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_curve_pair, m)?)?;
   m.add_function(wrap_pyfunction!(ft_group, m)?)?;
   m.add_function(wrap_pyfunction!(ft_ordinal_rank, m)?)?;
   m.add_function(wrap_pyfunction!(ft_rank, m)?)?;

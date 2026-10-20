@@ -758,6 +758,50 @@ def FT_COV[A: np.ndarray | list[np.ndarray]](
     _algo.ft_cov(r, left, right)
     return r
 
+def FT_CURVE_FIT[A: np.ndarray | list[np.ndarray]](
+  values: A, days: A, lengths: A, depth: int, op: int
+) -> A:
+  """
+  Polynomial fit over the first `depth` valid (days, value) pairs:
+  `op == 0` returns the linear coefficient, `op == 1` the quadratic one.
+  """
+  if isinstance(values, list) and isinstance(days, list) and isinstance(lengths, list):
+    values = [_to_f64(x) for x in values]
+    days = [_to_f64(x) for x in days]
+    lengths = [_to_f64(x) for x in lengths]
+    r = [np.empty_like(x) for x in values]
+    _algo.ft_curve_fit(r, values, days, lengths, depth, op)
+    return r
+  else:
+    values = _to_f64(values)
+    days = _to_f64(days)
+    lengths = _to_f64(lengths)
+    r = np.empty_like(values)
+    _algo.ft_curve_fit(r, values, days, lengths, depth, op)
+    return r
+
+def FT_CURVE_PAIR[A: np.ndarray | list[np.ndarray]](
+  values: A, days: A, lengths: A, near: int, far: int, op: int
+) -> A:
+  """
+  Pairwise curve op: 0 spread, 1 ratio, 2 log-ratio, 3 contango,
+  4 annualized carry, 5 segment slope, 6 rank value.
+  """
+  if isinstance(values, list) and isinstance(days, list) and isinstance(lengths, list):
+    values = [_to_f64(x) for x in values]
+    days = [_to_f64(x) for x in days]
+    lengths = [_to_f64(x) for x in lengths]
+    r = [np.empty_like(x) for x in values]
+    _algo.ft_curve_pair(r, values, days, lengths, near, far, op)
+    return r
+  else:
+    values = _to_f64(values)
+    days = _to_f64(days)
+    lengths = _to_f64(lengths)
+    r = np.empty_like(values)
+    _algo.ft_curve_pair(r, values, days, lengths, near, far, op)
+    return r
+
 def FT_GROUP[A: np.ndarray | list[np.ndarray]](
   input: A, mask: A, category: A, op: int
 ) -> A:
