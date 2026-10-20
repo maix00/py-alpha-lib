@@ -54,23 +54,36 @@ pub fn ta_ft_rank<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
-  for t in 0..rows {
+  // 转成 (T, N) 连续布局后按时间步并行：每个时间步只写自己那一行，无锁。
+  let mut buffer = vec![NumT::nan(); groups * rows];
+  for g in 0..groups {
+    for t in 0..rows {
+      buffer[t * groups + g] = input[g * rows + t];
+    }
+  }
+  use rayon::prelude::*;
+  buffer.par_chunks_mut(groups).for_each(|row| {
     let mut values = Vec::with_capacity(groups);
     let mut positions = Vec::with_capacity(groups);
     for g in 0..groups {
-      let v = input[g * rows + t];
+      let v = row[g];
       if is_normal(&v) {
         values.push(v);
-        positions.push(g * rows + t);
+        positions.push(g);
       }
     }
     if values.is_empty() {
-      continue;
+      return;
     }
     let (_, ranks) = average_ranks(&values);
     let count = NumT::from(values.len()).unwrap();
-    for (index, position) in positions.iter().enumerate() {
-      r[*position] = ranks[index] / count - NumT::from(0.5).unwrap();
+    for (index, g) in positions.iter().enumerate() {
+      row[*g] = ranks[index] / count - NumT::from(0.5).unwrap();
+    }
+  });
+  for g in 0..groups {
+    for t in 0..rows {
+      r[g * rows + t] = buffer[t * groups + g];
     }
   }
   Ok(())
