@@ -314,10 +314,34 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_DYNAMIC_ARG",
+      lua.create_function(|lua, (input, starts, ends, period, flags): (NumArray, NumArray, NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_dynamic_arg::<f64>(&ctx(lua), &mut r, &input, &starts, &ends, period, flags)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_DYNAMIC_MASK",
+      lua.create_function(|lua, (input, starts, ends, period): (NumArray, NumArray, NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_dynamic_mask::<f64>(&ctx(lua), &mut r, &input, &starts, &ends, period)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FT_GROUP",
       lua.create_function(|lua, (input, mask, category, op): (NumArray, NumArray, NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_ft_group::<f64>(&ctx(lua), &mut r, &input, &mask, &category, op)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_GROUP_REDUCE",
+      lua.create_function(|lua, (input, category, weight, op): (NumArray, NumArray, NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_group_reduce::<f64>(&ctx(lua), &mut r, &input, &category, &weight, op)?;
         Ok(NumArray::from(r))
       })?,
     )?;

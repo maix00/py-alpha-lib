@@ -802,6 +802,56 @@ def FT_CURVE_PAIR[A: np.ndarray | list[np.ndarray]](
     _algo.ft_curve_pair(r, values, days, lengths, near, far, op)
     return r
 
+def FT_DYNAMIC_ARG[A: np.ndarray | list[np.ndarray]](
+  input: A, starts: A, ends: A, period: int, flags: int
+) -> A:
+  """
+  Dynamic truncated rolling arg-extreme.
+  
+  ``starts``/``ends`` are per-window offsets evaluated at the window end row
+  (NaN means no truncation on that side). Output keeps the input shape;
+  warmup ``period - 1`` rows stay NaN. Ties choose the most recent bar and an
+  empty range returns 0, matching the pandas reference.
+  """
+  if isinstance(input, list) and isinstance(starts, list) and isinstance(ends, list):
+    input = [_to_f64(x) for x in input]
+    starts = [_to_f64(x) for x in starts]
+    ends = [_to_f64(x) for x in ends]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_dynamic_arg(r, input, starts, ends, period, flags)
+    return r
+  else:
+    input = _to_f64(input)
+    starts = _to_f64(starts)
+    ends = _to_f64(ends)
+    r = np.empty_like(input)
+    _algo.ft_dynamic_arg(r, input, starts, ends, period, flags)
+    return r
+
+def FT_DYNAMIC_MASK[A: np.ndarray | list[np.ndarray]](
+  input: A, starts: A, ends: A, period: int
+) -> A:
+  """
+  Apply the pandas-compatible dynamic truncation mask to a rolling panel.
+  
+  ``starts``/``ends`` are offsets evaluated at the window end row; masked
+  entries become NaN and the caller runs the normal rolling kernel afterwards.
+  """
+  if isinstance(input, list) and isinstance(starts, list) and isinstance(ends, list):
+    input = [_to_f64(x) for x in input]
+    starts = [_to_f64(x) for x in starts]
+    ends = [_to_f64(x) for x in ends]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_dynamic_mask(r, input, starts, ends, period)
+    return r
+  else:
+    input = _to_f64(input)
+    starts = _to_f64(starts)
+    ends = _to_f64(ends)
+    r = np.empty_like(input)
+    _algo.ft_dynamic_mask(r, input, starts, ends, period)
+    return r
+
 def FT_GROUP[A: np.ndarray | list[np.ndarray]](
   input: A, mask: A, category: A, op: int
 ) -> A:
@@ -822,6 +872,32 @@ def FT_GROUP[A: np.ndarray | list[np.ndarray]](
     category = _to_f64(category)
     r = np.empty_like(input)
     _algo.ft_group(r, input, mask, category, op)
+    return r
+
+def FT_GROUP_REDUCE[A: np.ndarray | list[np.ndarray]](
+  input: A, category: A, weight: A, op: int
+) -> A:
+  """
+  Reduce an ``(entities, rows)`` panel by category.
+  
+  The output keeps the input shape; every entity receives the aggregate of its
+  category group. Python selects one representative row per group to obtain a
+  dense ``(groups, rows)`` panel. This matches the existing Lua/Python binding
+  contract while keeping the reduction in Rust.
+  """
+  if isinstance(input, list) and isinstance(category, list) and isinstance(weight, list):
+    input = [_to_f64(x) for x in input]
+    category = [_to_f64(x) for x in category]
+    weight = [_to_f64(x) for x in weight]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_group_reduce(r, input, category, weight, op)
+    return r
+  else:
+    input = _to_f64(input)
+    category = _to_f64(category)
+    weight = _to_f64(weight)
+    r = np.empty_like(input)
+    _algo.ft_group_reduce(r, input, category, weight, op)
     return r
 
 def FT_ORDINAL_RANK[A: np.ndarray | list[np.ndarray]](

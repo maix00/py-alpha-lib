@@ -3095,6 +3095,95 @@
       ta_ft_curve_pair(&ctx, r, values, days, lengths, near, far, op).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Dynamic truncated rolling arg-extreme.
+  #[pyfunction]
+  fn ft_dynamic_arg<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    starts: &'py Bound<'_, PyAny>,
+    ends: &'py Bound<'_, PyAny>,
+    period: usize,
+    flags: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, input), starts), ends)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(starts.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(ends.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let starts = starts.as_array();
+      let starts = starts.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let ends = ends.as_array();
+      let ends = ends.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_dynamic_arg(&ctx, r, input, starts, ends, period, flags).map_err(|e| e.into())
+    } else if let Some((((mut r, input), starts), ends)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(starts.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(ends.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let starts = starts.as_array();
+      let starts = starts.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let ends = ends.as_array();
+      let ends = ends.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_dynamic_arg(&ctx, r, input, starts, ends, period, flags).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Apply the pandas-compatible dynamic truncation mask to a rolling panel.
+  #[pyfunction]
+  fn ft_dynamic_mask<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    starts: &'py Bound<'_, PyAny>,
+    ends: &'py Bound<'_, PyAny>,
+    period: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, input), starts), ends)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(starts.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(ends.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let starts = starts.as_array();
+      let starts = starts.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let ends = ends.as_array();
+      let ends = ends.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_dynamic_mask(&ctx, r, input, starts, ends, period).map_err(|e| e.into())
+    } else if let Some((((mut r, input), starts), ends)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(starts.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(ends.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let starts = starts.as_array();
+      let starts = starts.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let ends = ends.as_array();
+      let ends = ends.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_dynamic_mask(&ctx, r, input, starts, ends, period).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
   /// Category-partitioned cross-sectional transform: 0 = rank, 1 = z-score,
   #[pyfunction]
   fn ft_group<'py>(
@@ -3137,6 +3226,50 @@
       let category = category.as_array();
       let category = category.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
       ta_ft_group(&ctx, r, input, mask, category, op).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Reduce an ``(entities, rows)`` panel by category.
+  #[pyfunction]
+  fn ft_group_reduce<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    category: &'py Bound<'_, PyAny>,
+    weight: &'py Bound<'_, PyAny>,
+    op: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, input), category), weight)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(category.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(weight.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let category = category.as_array();
+      let category = category.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let weight = weight.as_array();
+      let weight = weight.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_group_reduce(&ctx, r, input, category, weight, op).map_err(|e| e.into())
+    } else if let Some((((mut r, input), category), weight)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(category.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(weight.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let category = category.as_array();
+      let category = category.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let weight = weight.as_array();
+      let weight = weight.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_group_reduce(&ctx, r, input, category, weight, op).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
   /// Ordinal rank (1..n) with `tiebreak` deciding equal values; `ascending == 0`
@@ -9497,7 +9630,10 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(ft_cov, m)?)?;
   m.add_function(wrap_pyfunction!(ft_curve_fit, m)?)?;
   m.add_function(wrap_pyfunction!(ft_curve_pair, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_dynamic_arg, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_dynamic_mask, m)?)?;
   m.add_function(wrap_pyfunction!(ft_group, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_group_reduce, m)?)?;
   m.add_function(wrap_pyfunction!(ft_ordinal_rank, m)?)?;
   m.add_function(wrap_pyfunction!(ft_rank, m)?)?;
   m.add_function(wrap_pyfunction!(ft_rank_masked, m)?)?;
