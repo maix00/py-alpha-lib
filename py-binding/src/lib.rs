@@ -175,6 +175,60 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct LedgerState {
+  accounts: std::collections::HashMap<String, LedgerAccount>,
+  margins: std::collections::HashMap<String, MarginAccount>,
+}
+
+#[pymethods]
+impl LedgerState {
+  #[new]
+  fn new() -> Self {
+    Self {
+      accounts: std::collections::HashMap::new(),
+      margins: std::collections::HashMap::new(),
+    }
+  }
+
+  fn ensure(&mut self, ledger_id: &str, cash: f64) {
+    self.accounts.entry(ledger_id.to_string()).or_insert_with(|| LedgerAccount::new(cash));
+  }
+
+  fn apply_fill(
+    &mut self, ledger_id: &str, product: &str,
+    quantity: f64, price: f64, multiplier: f64, fee: f64,
+    margin_ratio: f64, margin_accounting: bool,
+  ) -> f64 {
+    let account = self.accounts.get_mut(ledger_id);
+    let Some(account) = account else { return 0.0 };
+    let realized = account.apply_fill(product, quantity, price, multiplier, fee);
+    // Fully-funded cash accounting settles notional, not realized PnL.
+    account.cash -= realized;
+    if !margin_accounting {
+      account.cash -= quantity * price * multiplier;
+    }
+    if margin_accounting {
+      let margin = self.margins.entry(ledger_id.to_string()).or_insert_with(MarginAccount::new);
+      let (position, _) = account.position(product);
+      margin.update(product, position, price, multiplier, margin_ratio);
+    }
+    realized
+  }
+
+  fn cash(&self, ledger_id: &str) -> f64 {
+    self.accounts.get(ledger_id).map(|account| account.cash).unwrap_or(0.0)
+  }
+
+  fn position(&self, ledger_id: &str, product: &str) -> (f64, f64) {
+    self.accounts.get(ledger_id).map(|account| account.position(product)).unwrap_or((0.0, 0.0))
+  }
+
+  fn reserved(&self, ledger_id: &str) -> f64 {
+    self.margins.get(ledger_id).map(|account| account.reserved).unwrap_or(0.0)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct MarginAccount {
   reserved: f64,
   by_product: std::collections::HashMap<String, f64>,
@@ -539,6 +593,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<LedgerAccount>()?;
   m.add_class::<OrderCore>()?;
   m.add_class::<MarginAccount>()?;
+  m.add_class::<LedgerState>()?;
   register_functions(m)?;
   Ok(())
 }
