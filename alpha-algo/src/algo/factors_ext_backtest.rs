@@ -83,25 +83,26 @@ pub fn ta_ft_exec_schedule_ts<NumT: Float + Send + Sync>(
       let mid = (low + high) / 2;
       if indices[mid] < NumT::zero() { low = mid + 1 } else { high = mid }
     }
-    let price_pos = low + delay;
-    let value = if price_pos >= end {
+    let length = end - start;
+    let price_pos = (low - start) + delay;
+    let value = if price_pos >= length {
       NumT::nan()
     } else if mode == 0 {
-      indices[price_pos]
+      indices[start + price_pos]
     } else if open_basis != 0 {
-      if price_pos == start {
+      if price_pos == 0 {
         NumT::nan()
       } else {
-        let previous = indices[price_pos - 1] + open_delay;
+        let previous = indices[start + price_pos - 1] + open_delay;
         let bar_open = if freq > NumT::zero() {
-          indices[price_pos] - freq + open_delay
+          indices[start + price_pos] - freq + open_delay
         } else {
           previous
         };
         if previous > bar_open { previous } else { bar_open }
       }
     } else {
-      indices[price_pos] + end_delay
+      indices[start + price_pos] + end_delay
     };
     for offset in start..end {
       r[offset] = value;
