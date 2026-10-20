@@ -349,63 +349,77 @@ pub fn ta_ft_group<NumT: Float + Send + Sync>(
   }
   r.fill(NumT::nan());
   let (groups, rows) = layout(input.len(), ctx.groups());
+  let mut values_buf = vec![NumT::nan(); groups * rows];
+  let mut mask_buf = vec![NumT::zero(); groups * rows];
+  for g in 0..groups {
+    for t in 0..rows {
+      values_buf[t * groups + g] = input[g * rows + t];
+      mask_buf[t * groups + g] = mask[g * rows + t];
+    }
+  }
   let max_id = category.iter().map(|v| v.to_usize().unwrap_or(0)).max().unwrap_or(0);
-  for t in 0..rows {
-    for id in 0..=max_id {
-      let mut values = Vec::new();
-      let mut positions = Vec::new();
-      for g in 0..groups {
-        if category[g].to_usize().unwrap_or(usize::MAX) != id {
-          continue;
-        }
-        let index = g * rows + t;
-        if is_normal(&input[index]) && (mask[index] > NumT::zero()) {
-          values.push(input[index]);
-          positions.push(index);
-        }
-      }
-      if values.is_empty() {
-        continue;
-      }
-      match op {
-        0 => {
-          let (_, ranks) = average_ranks(&values);
-          let count = NumT::from(values.len()).unwrap();
-          for (i, position) in positions.iter().enumerate() {
-            r[*position] = ranks[i] / count - NumT::from(0.5).unwrap();
-          }
-        }
-        1 => {
-          if values.len() < 2 {
-            for position in &positions {
-              r[*position] = NumT::nan();
-            }
+  use rayon::prelude::*;
+  values_buf
+    .par_chunks_mut(groups)
+    .zip(mask_buf.par_chunks(groups))
+    .for_each(|(row, mask_row)| {
+      for id in 0..=max_id {
+        let mut values = Vec::new();
+        let mut positions = Vec::new();
+        for g in 0..groups {
+          if category[g].to_usize().unwrap_or(usize::MAX) != id {
             continue;
           }
-          let count = NumT::from(values.len()).unwrap();
-          let mean = values.iter().fold(NumT::zero(), |a, v| a + *v) / count;
-          let mut m2 = NumT::zero();
-          for value in &values {
-            let d = *value - mean;
-            m2 = m2 + d * d;
-          }
-          let std = (m2 / (count - NumT::one())).sqrt();
-          for (i, position) in positions.iter().enumerate() {
-            r[*position] = if std > NumT::zero() {
-              (values[i] - mean) / std
-            } else {
-              NumT::zero()
-            };
+          let v = row[g];
+          if is_normal(&v) && mask_row[g] > NumT::zero() {
+            values.push(v);
+            positions.push(g);
           }
         }
-        _ => {
-          let count = NumT::from(values.len()).unwrap();
-          let mean = values.iter().fold(NumT::zero(), |a, v| a + *v) / count;
-          for (i, position) in positions.iter().enumerate() {
-            r[*position] = values[i] - mean;
+        if values.is_empty() {
+          continue;
+        }
+        match op {
+          0 => {
+            let (_, ranks) = average_ranks(&values);
+            let count = NumT::from(values.len()).unwrap();
+            for (i, position) in positions.iter().enumerate() {
+              row[*position] = ranks[i] / count - NumT::from(0.5).unwrap();
+            }
+          }
+          1 => {
+            if values.len() < 2 {
+              continue;
+            }
+            let count = NumT::from(values.len()).unwrap();
+            let mean = values.iter().fold(NumT::zero(), |a, v| a + *v) / count;
+            let mut m2 = NumT::zero();
+            for value in &values {
+              let d = *value - mean;
+              m2 = m2 + d * d;
+            }
+            let std = (m2 / (count - NumT::one())).sqrt();
+            for (i, position) in positions.iter().enumerate() {
+              row[*position] = if std > NumT::zero() {
+                (values[i] - mean) / std
+              } else {
+                NumT::zero()
+              };
+            }
+          }
+          _ => {
+            let count = NumT::from(values.len()).unwrap();
+            let mean = values.iter().fold(NumT::zero(), |a, v| a + *v) / count;
+            for (i, position) in positions.iter().enumerate() {
+              row[*position] = values[i] - mean;
+            }
           }
         }
       }
+    });
+  for g in 0..groups {
+    for t in 0..rows {
+      r[g * rows + t] = values_buf[t * groups + g];
     }
   }
   Ok(())
