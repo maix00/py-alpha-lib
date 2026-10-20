@@ -194,6 +194,16 @@ impl LedgerState {
     self.accounts.entry(ledger_id.to_string()).or_insert_with(|| LedgerAccount::new(cash));
   }
 
+  fn set_cash(&mut self, ledger_id: &str, cash: f64) {
+    let account = self.accounts.entry(ledger_id.to_string()).or_insert_with(|| LedgerAccount::new(cash));
+    account.cash = cash;
+  }
+
+  fn set_position(&mut self, ledger_id: &str, product: &str, quantity: f64, cost: f64) {
+    let account = self.accounts.entry(ledger_id.to_string()).or_insert_with(|| LedgerAccount::new(0.0));
+    account.positions.insert(product.to_string(), (quantity, cost));
+  }
+
   fn apply_fill(
     &mut self, ledger_id: &str, product: &str,
     quantity: f64, price: f64, multiplier: f64, fee: f64,
