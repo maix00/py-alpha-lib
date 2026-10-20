@@ -96,35 +96,59 @@ pub fn ta_skew_exact<NumT: Float + Send + Sync>(
   }
   let minimum = min_count.max(1);
 
+  // Sliding raw moments: O(n) per series instead of re-centering the whole
+  // window at every bar. Values are centered on the first valid observation to
+  // limit cancellation in the third moment.
   r.par_chunks_mut(ctx.chunk_size(r.len()))
     .zip(input.par_chunks(ctx.chunk_size(input.len())))
     .for_each(|(r, x)| {
       let start = ctx.start(r.len());
       let end = ctx.end(r.len());
-      for i in start..end {
-        let buf = collect_window(x, i, periods);
-        let n = buf.len();
-        if n < minimum || n < 3 {
+      let center = x[..end]
+        .iter()
+        .copied()
+        .find(|value| is_normal(value))
+        .unwrap_or(NumT::zero());
+      let mut count = 0usize;
+      let mut s1 = NumT::zero();
+      let mut s2 = NumT::zero();
+      let mut s3 = NumT::zero();
+      for i in 0..end {
+        let value = x[i];
+        if is_normal(&value) {
+          let z = value - center;
+          let z2 = z * z;
+          s1 = s1 + z;
+          s2 = s2 + z2;
+          s3 = s3 + z2 * z;
+          count += 1;
+        }
+        if i >= periods {
+          let old = x[i - periods];
+          if is_normal(&old) {
+            let z = old - center;
+            let z2 = z * z;
+            s1 = s1 - z;
+            s2 = s2 - z2;
+            s3 = s3 - z2 * z;
+            count -= 1;
+          }
+        }
+        if i < start || count < minimum || count < 3 {
           continue;
         }
-        let count = NumT::from(n).unwrap();
-        let mean = buf.iter().fold(NumT::zero(), |acc, v| acc + *v) / count;
-        let mut m2 = NumT::zero();
-        let mut m3 = NumT::zero();
-        for value in &buf {
-          let delta = *value - mean;
-          let delta2 = delta * delta;
-          m2 = m2 + delta2;
-          m3 = m3 + delta2 * delta;
-        }
+        let n = NumT::from(count).unwrap();
+        let mean = s1 / n;
+        let m2 = s2 - s1 * mean;
         if !(m2 > NumT::zero()) {
           r[i] = NumT::zero();
           continue;
         }
-        let sample_var = m2 / (count - NumT::one());
+        let m3 = s3 - NumT::from(3).unwrap() * mean * s2
+          + NumT::from(2).unwrap() * n * mean * mean * mean;
+        let sample_var = m2 / (n - NumT::one());
         let std = sample_var.sqrt();
-        let nf = count;
-        r[i] = nf / ((nf - NumT::one()) * (nf - NumT::from(2).unwrap()))
+        r[i] = n / ((n - NumT::one()) * (n - NumT::from(2).unwrap()))
           * (m3 / (std * std * std));
       }
     });
@@ -275,27 +299,86 @@ pub fn ta_quantile_nan<NumT: Float + Send + Sync>(
   }
   let minimum = min_count.max(1).min(periods);
 
+  // Sliding-window order statistics: coordinate-compressed values + Fenwick
+  // counts. O(n log n) per series instead of sorting the whole window at every
+  // bar (the previous implementation was O(n * w log w)).
   r.par_chunks_mut(ctx.chunk_size(r.len()))
     .zip(input.par_chunks(ctx.chunk_size(input.len())))
     .for_each(|(r, x)| {
       let start = ctx.start(r.len());
       let end = ctx.end(r.len());
-      for i in start..end {
-        let mut buf = collect_window(x, i, periods);
-        let n = buf.len();
-        if n < minimum {
+      let mut values: Vec<NumT> = x[..end]
+        .iter()
+        .copied()
+        .filter(|value| is_normal(value))
+        .collect();
+      if values.is_empty() {
+        return;
+      }
+      values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+      values.dedup();
+      let width = values.len();
+      let mut tree = vec![0i64; width + 1];
+      let mut total = 0usize;
+      let mut highest = 1usize;
+      while highest * 2 <= width {
+        highest *= 2;
+      }
+      fn add(tree: &mut [i64], width: usize, position: usize, delta: i64) {
+        let mut index = position + 1;
+        while index <= width {
+          tree[index] += delta;
+          index += index & index.wrapping_neg();
+        }
+      }
+      fn kth(tree: &[i64], width: usize, highest: usize, mut k: usize) -> usize {
+        let mut index = 0usize;
+        let mut step = highest;
+        while step > 0 {
+          let next = index + step;
+          if next <= width && tree[next] <= k as i64 {
+            index = next;
+            k -= tree[next] as usize;
+          }
+          step >>= 1;
+        }
+        index.min(width - 1)
+      }
+      for i in 0..end {
+        let value = x[i];
+        if is_normal(&value) {
+          let position = values
+            .binary_search_by(|probe| {
+              probe
+                .partial_cmp(&value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0);
+          add(&mut tree, width, position, 1);
+          total += 1;
+        }
+        if i >= periods {
+          let old = x[i - periods];
+          if is_normal(&old) {
+            let position = values
+              .binary_search_by(|probe| {
+                probe.partial_cmp(&old).unwrap_or(std::cmp::Ordering::Equal)
+              })
+              .unwrap_or(0);
+            add(&mut tree, width, position, -1);
+            total -= 1;
+          }
+        }
+        if i < start || total < minimum {
           continue;
         }
-        buf.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        if n == 1 {
-          r[i] = buf[0];
-          continue;
-        }
-        let position = q * NumT::from(n - 1).unwrap();
-        let lower = position.floor().to_usize().unwrap_or(0).min(n - 1);
-        let upper = (lower + 1).min(n - 1);
-        let frac = position - NumT::from(lower).unwrap();
-        r[i] = buf[lower] + (buf[upper] - buf[lower]) * frac;
+        let position = q * NumT::from(total - 1).unwrap();
+        let lower = position.floor().to_usize().unwrap_or(0).min(total - 1);
+        let upper = (lower + 1).min(total - 1);
+        let fraction = position - NumT::from(lower).unwrap();
+        let lower_value = values[kth(&tree, width, highest, lower)];
+        let upper_value = values[kth(&tree, width, highest, upper)];
+        r[i] = lower_value + (upper_value - lower_value) * fraction;
       }
     });
   Ok(())
