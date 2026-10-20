@@ -218,6 +218,59 @@ impl LedgerAccount {
     realized
   }
 
+  fn apply_fill_batch(
+    &mut self, product: &str,
+    quantities: numpy::PyReadonlyArray1<'_, f64>,
+    prices: numpy::PyReadonlyArray1<'_, f64>,
+    multipliers: numpy::PyReadonlyArray1<'_, f64>,
+    fees: numpy::PyReadonlyArray1<'_, f64>,
+  ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+    let quantities = quantities.as_slice()?;
+    let prices = prices.as_slice()?;
+    let multipliers = multipliers.as_slice()?;
+    let fees = fees.as_slice()?;
+    let length = quantities.len();
+    if prices.len() != length || multipliers.len() != length || fees.len() != length {
+      return Err(pyo3::exceptions::PyValueError::new_err("fill batch length mismatch"));
+    }
+    let (mut prior_quantity, mut prior_cost) = self.positions
+      .get(product).copied().unwrap_or((0.0, 0.0));
+    let epsilon = 1e-12;
+    let mut realized = Vec::with_capacity(length);
+    let mut ended_quantity = Vec::with_capacity(length);
+    let mut ended_cost = Vec::with_capacity(length);
+    for index in 0..length {
+      let quantity = quantities[index];
+      let price = prices[index];
+      let new_quantity = prior_quantity + quantity;
+      let mut pnl = 0.0;
+      let mut new_cost = prior_cost;
+      if prior_quantity == 0.0 || (prior_quantity > 0.0) == (quantity > 0.0) {
+        new_cost = if new_quantity.abs() <= epsilon {
+          0.0
+        } else {
+          (prior_quantity * prior_cost + quantity * price) / new_quantity
+        };
+      } else {
+        let close_abs = prior_quantity.abs().min(quantity.abs());
+        pnl = close_abs * (price - prior_cost) * prior_quantity.signum() * multipliers[index];
+        if new_quantity.abs() <= epsilon {
+          new_cost = 0.0;
+        } else if quantity.abs() > prior_quantity.abs() {
+          new_cost = price;
+        }
+      }
+      prior_quantity = if new_quantity.abs() <= epsilon { 0.0 } else { new_quantity };
+      prior_cost = new_cost;
+      self.cash += pnl - fees[index];
+      realized.push(pnl);
+      ended_quantity.push(prior_quantity);
+      ended_cost.push(prior_cost);
+    }
+    self.positions.insert(product.to_string(), (prior_quantity, prior_cost));
+    Ok((realized, ended_quantity, ended_cost))
+  }
+
   fn position(&self, product: &str) -> (f64, f64) {
     self.positions.get(product).copied().unwrap_or((0.0, 0.0))
   }
