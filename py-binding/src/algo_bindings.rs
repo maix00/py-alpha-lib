@@ -2860,6 +2860,650 @@
       ta_fret(&ctx, r, open, close, is_calc, delay, periods).map_err(|e| e.into())
     } else { Err(PyValueError::new_err("invalid input")) }
   }
+  /// Cross-sectional Pearson correlation per timestamp.
+  #[pyfunction]
+  fn ft_corr<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    left: &'py Bound<'_, PyAny>,
+    right: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_corr(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_corr(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((r, left), right)) = r.cast::<PyList>().ok().zip(left.cast::<PyList>().ok()).zip(right.cast::<PyList>().ok()) {
+      if r.len() != left.len() || right.len() != left.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_corr(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_corr(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Cross-sectional covariance per timestamp (ddof=1).
+  #[pyfunction]
+  fn ft_cov<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    left: &'py Bound<'_, PyAny>,
+    right: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_cov(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_cov(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((r, left), right)) = r.cast::<PyList>().ok().zip(left.cast::<PyList>().ok()).zip(right.cast::<PyList>().ok()) {
+      if r.len() != left.len() || right.len() != left.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_cov(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_cov(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Category-partitioned cross-sectional transform: 0 = rank, 1 = z-score,
+  #[pyfunction]
+  fn ft_group<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    mask: &'py Bound<'_, PyAny>,
+    category: &'py Bound<'_, PyAny>,
+    op: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, input), mask), category)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(category.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let category = category.as_array();
+      let category = category.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_group(&ctx, r, input, mask, category, op).map_err(|e| e.into())
+    } else if let Some((((mut r, input), mask), category)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(category.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let category = category.as_array();
+      let category = category.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_group(&ctx, r, input, mask, category, op).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Ordinal rank (1..n) with `tiebreak` deciding equal values; `ascending == 0`
+  #[pyfunction]
+  fn ft_ordinal_rank<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    mask: &'py Bound<'_, PyAny>,
+    tiebreak: &'py Bound<'_, PyAny>,
+    ascending: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((mut r, input), mask), tiebreak)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(tiebreak.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let tiebreak = tiebreak.as_array();
+      let tiebreak = tiebreak.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_ordinal_rank(&ctx, r, input, mask, tiebreak, ascending).map_err(|e| e.into())
+    } else if let Some((((mut r, input), mask), tiebreak)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(tiebreak.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let tiebreak = tiebreak.as_array();
+      let tiebreak = tiebreak.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_ordinal_rank(&ctx, r, input, mask, tiebreak, ascending).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Cross-sectional percentage rank: `rank / valid_count - 0.5`.
+  #[pyfunction]
+  fn ft_rank<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_rank(&ctx, r, input).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_ft_rank(&ctx, r, input).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_ft_rank(&ctx, r, input).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_ft_rank(&ctx, r, input).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
+  /// Cross-sectional percentage rank restricted to an eligibility mask.
+  #[pyfunction]
+  fn ft_rank_masked<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+    mask: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, input), mask)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_rank_masked(&ctx, r, input, mask).map_err(|e| e.into())
+    } else if let Some(((mut r, input), mask)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_rank_masked(&ctx, r, input, mask).map_err(|e| e.into())
+    } else if let Some(((r, input), mask)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()).zip(mask.cast::<PyList>().ok()) {
+      if r.len() != input.len() || mask.len() != input.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, input), mask)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(mask.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mask = mask.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(input.into_par_iter()).zip(mask.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let input = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let mask = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_rank_masked(&ctx, r, input, mask).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, input), mask)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(mask.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mask = mask.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(input.into_par_iter()).zip(mask.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let input = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let mask = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_rank_masked(&ctx, r, input, mask).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Cross-sectional OLS residualization on up to three exposures.
+  #[pyfunction]
+  fn ft_residualize<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    signal: &'py Bound<'_, PyAny>,
+    exposure1: &'py Bound<'_, PyAny>,
+    exposure2: &'py Bound<'_, PyAny>,
+    exposure3: &'py Bound<'_, PyAny>,
+    mask: &'py Bound<'_, PyAny>,
+    exposure_count: usize,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((((((mut r, signal), exposure1), exposure2), exposure3), mask)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>().ok()
+      .zip(signal.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(exposure1.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(exposure2.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(exposure3.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let signal = signal.as_array();
+      let signal = signal.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure1 = exposure1.as_array();
+      let exposure1 = exposure1.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure2 = exposure2.as_array();
+      let exposure2 = exposure2.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure3 = exposure3.as_array();
+      let exposure3 = exposure3.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_residualize(&ctx, r, signal, exposure1, exposure2, exposure3, mask, exposure_count).map_err(|e| e.into())
+    } else if let Some((((((mut r, signal), exposure1), exposure2), exposure3), mask)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>().ok()
+      .zip(signal.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(exposure1.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(exposure2.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(exposure3.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(mask.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let signal = signal.as_array();
+      let signal = signal.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure1 = exposure1.as_array();
+      let exposure1 = exposure1.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure2 = exposure2.as_array();
+      let exposure2 = exposure2.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let exposure3 = exposure3.as_array();
+      let exposure3 = exposure3.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let mask = mask.as_array();
+      let mask = mask.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_residualize(&ctx, r, signal, exposure1, exposure2, exposure3, mask, exposure_count).map_err(|e| e.into())
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Cross-sectional Spearman correlation per timestamp.
+  #[pyfunction]
+  fn ft_spearman<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    left: &'py Bound<'_, PyAny>,
+    right: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f64>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f64>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_spearman(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((mut r, left), right)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>() .ok()
+      .zip(left.extract::<PyReadonlyArray1<'py, f32>>().ok())
+      .zip(right.extract::<PyReadonlyArray1<'py, f32>>().ok()) {
+      let mut r = r.as_array_mut();
+      let r = r.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let left = left.as_array();
+      let left = left.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      let right = right.as_array();
+      let right = right.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_spearman(&ctx, r, left, right).map_err(|e| e.into())
+    } else if let Some(((r, left), right)) = r.cast::<PyList>().ok().zip(left.cast::<PyList>().ok()).zip(right.cast::<PyList>().ok()) {
+      if r.len() != left.len() || right.len() != left.len() { return Err(PyValueError::new_err("length mismatch")); }
+      if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok()) {
+        // ... list iter logic ...
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_spearman(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else if let Some(((mut r, left), right)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>().ok()
+        .zip(left.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+        .zip(right.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok()) {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let left = left.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let right = right.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter().zip(left.into_par_iter()).zip(right.into_par_iter())
+          .map(|((mut out, a), b)| {
+            let r = out.as_slice_mut().ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+            let left = a.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            let right = b.as_slice().ok_or(PyValueError::new_err("failed to get slice"))?;
+            ta_ft_spearman(&ctx, r, left, right).map_err(|e| e.into())
+          }).collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) { Some(e) => e, None => Ok(()) }
+      } else { Err(PyValueError::new_err("invalid input list")) }
+    } else { Err(PyValueError::new_err("invalid input")) }
+  }
+  /// Cross-sectional z-score with sample standard deviation (ddof=1).
+  #[pyfunction]
+  fn ft_zscore<'py>(
+    py: Python<'py>,
+    r: &'py Bound<'_, PyAny>,
+    input: &'py Bound<'_, PyAny>,
+  ) -> PyResult<()> {
+    // 1. get context
+    #[allow(unused_mut)]
+    let mut ctx = ctx(py);
+    // 2. check input type and do dispatch
+    if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f64>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f64>>().ok())
+    {
+      // input is f64 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("failed to get mutable slice"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("failed to get slice"))?;
+      ta_ft_zscore(&ctx, r, input).map_err(|e| e.into())
+    } else if let Some((mut r, input)) = r
+      .extract::<PyReadwriteArray1<'py, f32>>()
+      .ok()
+      .zip(input.extract::<PyReadonlyArray1<'py, f32>>().ok())
+    {
+      // input is f32 array
+      let mut r = r.as_array_mut();
+      let r = r
+        .as_slice_mut()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      let input = input.as_array();
+      let input = input
+        .as_slice()
+        .ok_or(PyValueError::new_err("invalid input"))?;
+      ta_ft_zscore(&ctx, r, input).map_err(|e| e.into())
+    } else if let Some((r, input)) = r.cast::<PyList>().ok().zip(input.cast::<PyList>().ok()) {
+      // input is list of arrays
+      // each array is a group, ensure groups is set to 1
+      ctx._groups = 1;
+      if r.len() != input.len() {
+        return Err(PyValueError::new_err("length mismatch"));
+      }
+      // check if each array is f64 array
+      if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f64>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f64>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_ft_zscore(&ctx, r, input).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      // check if each array is f32 array
+      } else if let Some((mut r, input)) = r
+        .extract::<Vec<PyReadwriteArray1<'py, f32>>>()
+        .ok()
+        .zip(input.extract::<Vec<PyReadonlyArray1<'py, f32>>>().ok())
+      {
+        let r = r.iter_mut().map(|x| x.as_array_mut()).collect::<Vec<_>>();
+        let input = input.iter().map(|x| x.as_array()).collect::<Vec<_>>();
+        let mut _r = vec![];
+        r.into_par_iter()
+          .zip(input.into_par_iter())
+          .map(|(mut out, input)| {
+            let r = out.as_slice_mut();
+            let input = input.as_slice();
+            if let Some((r, input)) = r.zip(input) {
+              ta_ft_zscore(&ctx, r, input).map_err(|e| e.into())
+            } else {
+              Err(PyValueError::new_err("invalid input"))
+            }
+          })
+          .collect_into_vec(&mut _r);
+        match _r.into_iter().find(|x| x.is_err()) {
+          Some(e) => e,
+          None => Ok(()),
+        }
+      } else {
+        Err(PyValueError::new_err("invalid input"))
+      }
+    } else {
+      Err(PyValueError::new_err("invalid input"))
+    }
+  }
   /// Forward split and dividend adjustment
   #[pyfunction]
   fn fw_split<'py>(
@@ -8608,6 +9252,15 @@ pub fn register_functions(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(entropy, m)?)?;
   m.add_function(wrap_pyfunction!(filter, m)?)?;
   m.add_function(wrap_pyfunction!(fret, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_corr, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_cov, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_group, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_ordinal_rank, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_rank, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_rank_masked, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_residualize, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_spearman, m)?)?;
+  m.add_function(wrap_pyfunction!(ft_zscore, m)?)?;
   m.add_function(wrap_pyfunction!(fw_split, m)?)?;
   m.add_function(wrap_pyfunction!(fw_split_factor, m)?)?;
   m.add_function(wrap_pyfunction!(group_rank, m)?)?;

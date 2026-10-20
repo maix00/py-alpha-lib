@@ -282,6 +282,78 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "FT_CORR",
+      lua.create_function(|lua, (left, right): (NumArray, NumArray)| {
+        let mut r = vec![0.0; left.len()];
+        ta_ft_corr::<f64>(&ctx(lua), &mut r, &left, &right)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_COV",
+      lua.create_function(|lua, (left, right): (NumArray, NumArray)| {
+        let mut r = vec![0.0; left.len()];
+        ta_ft_cov::<f64>(&ctx(lua), &mut r, &left, &right)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_GROUP",
+      lua.create_function(|lua, (input, mask, category, op): (NumArray, NumArray, NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_group::<f64>(&ctx(lua), &mut r, &input, &mask, &category, op)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_ORDINAL_RANK",
+      lua.create_function(|lua, (input, mask, tiebreak, ascending): (NumArray, NumArray, NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_ordinal_rank::<f64>(&ctx(lua), &mut r, &input, &mask, &tiebreak, ascending)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_RANK",
+      lua.create_function(|lua, (input,): (NumArray,)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_rank::<f64>(&ctx(lua), &mut r, &input)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_RANK_MASKED",
+      lua.create_function(|lua, (input, mask): (NumArray, NumArray)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_rank_masked::<f64>(&ctx(lua), &mut r, &input, &mask)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_RESIDUALIZE",
+      lua.create_function(|lua, (signal, exposure1, exposure2, exposure3, mask, exposure_count): (NumArray, NumArray, NumArray, NumArray, NumArray, usize)| {
+        let mut r = vec![0.0; signal.len()];
+        ta_ft_residualize::<f64>(&ctx(lua), &mut r, &signal, &exposure1, &exposure2, &exposure3, &mask, exposure_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_SPEARMAN",
+      lua.create_function(|lua, (left, right): (NumArray, NumArray)| {
+        let mut r = vec![0.0; left.len()];
+        ta_ft_spearman::<f64>(&ctx(lua), &mut r, &left, &right)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "FT_ZSCORE",
+      lua.create_function(|lua, (input,): (NumArray,)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ft_zscore::<f64>(&ctx(lua), &mut r, &input)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "FW_SPLIT",
       lua.create_function(|lua, (price, dividend, transfer_shares, right_shares, right_price): (NumArray, NumArray, NumArray, NumArray, NumArray)| {
         let mut r = vec![0.0; price.len()];

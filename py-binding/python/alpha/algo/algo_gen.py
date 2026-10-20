@@ -720,6 +720,186 @@ def FRET[A: np.ndarray | list[np.ndarray]](
     _algo.fret(r, open, close, is_calc, delay, periods)
     return r
 
+def FT_CORR[A: np.ndarray | list[np.ndarray]](
+  left: A, right: A
+) -> A:
+  """
+  Cross-sectional Pearson correlation per timestamp.
+  """
+  if isinstance(left, list) and isinstance(right, list):
+    left = [_to_f64(x) for x in left]
+    right = [_to_f64(x) for x in right]
+    r = [np.empty_like(x) for x in left]
+    _algo.ft_corr(r, left, right)
+    return r
+  else:
+    left = _to_f64(left)
+    right = _to_f64(right)
+    r = np.empty_like(left)
+    _algo.ft_corr(r, left, right)
+    return r
+
+def FT_COV[A: np.ndarray | list[np.ndarray]](
+  left: A, right: A
+) -> A:
+  """
+  Cross-sectional covariance per timestamp (ddof=1).
+  """
+  if isinstance(left, list) and isinstance(right, list):
+    left = [_to_f64(x) for x in left]
+    right = [_to_f64(x) for x in right]
+    r = [np.empty_like(x) for x in left]
+    _algo.ft_cov(r, left, right)
+    return r
+  else:
+    left = _to_f64(left)
+    right = _to_f64(right)
+    r = np.empty_like(left)
+    _algo.ft_cov(r, left, right)
+    return r
+
+def FT_GROUP[A: np.ndarray | list[np.ndarray]](
+  input: A, mask: A, category: A, op: int
+) -> A:
+  """
+  Category-partitioned cross-sectional transform: 0 = rank, 1 = z-score,
+  2 = demean. `category` holds one category id per group (-1 = unassigned).
+  """
+  if isinstance(input, list) and isinstance(mask, list) and isinstance(category, list):
+    input = [_to_f64(x) for x in input]
+    mask = [_to_f64(x) for x in mask]
+    category = [_to_f64(x) for x in category]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_group(r, input, mask, category, op)
+    return r
+  else:
+    input = _to_f64(input)
+    mask = _to_f64(mask)
+    category = _to_f64(category)
+    r = np.empty_like(input)
+    _algo.ft_group(r, input, mask, category, op)
+    return r
+
+def FT_ORDINAL_RANK[A: np.ndarray | list[np.ndarray]](
+  input: A, mask: A, tiebreak: A, ascending: int
+) -> A:
+  """
+  Ordinal rank (1..n) with `tiebreak` deciding equal values; `ascending == 0`
+  ranks descending. Non-eligible entries stay NaN.
+  """
+  if isinstance(input, list) and isinstance(mask, list) and isinstance(tiebreak, list):
+    input = [_to_f64(x) for x in input]
+    mask = [_to_f64(x) for x in mask]
+    tiebreak = [_to_f64(x) for x in tiebreak]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_ordinal_rank(r, input, mask, tiebreak, ascending)
+    return r
+  else:
+    input = _to_f64(input)
+    mask = _to_f64(mask)
+    tiebreak = _to_f64(tiebreak)
+    r = np.empty_like(input)
+    _algo.ft_ordinal_rank(r, input, mask, tiebreak, ascending)
+    return r
+
+def FT_RANK[A: np.ndarray | list[np.ndarray]](
+  input: A
+) -> A:
+  """
+  Cross-sectional percentage rank: `rank / valid_count - 0.5`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_rank(r, input)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.ft_rank(r, input)
+    return r
+
+def FT_RANK_MASKED[A: np.ndarray | list[np.ndarray]](
+  input: A, mask: A
+) -> A:
+  """
+  Cross-sectional percentage rank restricted to an eligibility mask.
+  """
+  if isinstance(input, list) and isinstance(mask, list):
+    input = [_to_f64(x) for x in input]
+    mask = [_to_f64(x) for x in mask]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_rank_masked(r, input, mask)
+    return r
+  else:
+    input = _to_f64(input)
+    mask = _to_f64(mask)
+    r = np.empty_like(input)
+    _algo.ft_rank_masked(r, input, mask)
+    return r
+
+def FT_RESIDUALIZE[A: np.ndarray | list[np.ndarray]](
+  signal: A, exposure1: A, exposure2: A, exposure3: A, mask: A, exposure_count: int
+) -> A:
+  """
+  Cross-sectional OLS residualization on up to three exposures.
+  """
+  if isinstance(signal, list) and isinstance(exposure1, list) and isinstance(exposure2, list) and isinstance(exposure3, list) and isinstance(mask, list):
+    signal = [_to_f64(x) for x in signal]
+    exposure1 = [_to_f64(x) for x in exposure1]
+    exposure2 = [_to_f64(x) for x in exposure2]
+    exposure3 = [_to_f64(x) for x in exposure3]
+    mask = [_to_f64(x) for x in mask]
+    r = [np.empty_like(x) for x in signal]
+    _algo.ft_residualize(r, signal, exposure1, exposure2, exposure3, mask, exposure_count)
+    return r
+  else:
+    signal = _to_f64(signal)
+    exposure1 = _to_f64(exposure1)
+    exposure2 = _to_f64(exposure2)
+    exposure3 = _to_f64(exposure3)
+    mask = _to_f64(mask)
+    r = np.empty_like(signal)
+    _algo.ft_residualize(r, signal, exposure1, exposure2, exposure3, mask, exposure_count)
+    return r
+
+def FT_SPEARMAN[A: np.ndarray | list[np.ndarray]](
+  left: A, right: A
+) -> A:
+  """
+  Cross-sectional Spearman correlation per timestamp.
+  """
+  if isinstance(left, list) and isinstance(right, list):
+    left = [_to_f64(x) for x in left]
+    right = [_to_f64(x) for x in right]
+    r = [np.empty_like(x) for x in left]
+    _algo.ft_spearman(r, left, right)
+    return r
+  else:
+    left = _to_f64(left)
+    right = _to_f64(right)
+    r = np.empty_like(left)
+    _algo.ft_spearman(r, left, right)
+    return r
+
+def FT_ZSCORE[A: np.ndarray | list[np.ndarray]](
+  input: A
+) -> A:
+  """
+  Cross-sectional z-score with sample standard deviation (ddof=1).
+  Constant rows produce 0 for observed entries, matching the pandas backend.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.ft_zscore(r, input)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.ft_zscore(r, input)
+    return r
+
 def FW_SPLIT[A: np.ndarray | list[np.ndarray]](
   price: A, dividend: A, transfer_shares: A, right_shares: A, right_price: A
 ) -> A:
