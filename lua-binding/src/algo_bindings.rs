@@ -32,6 +32,38 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "ARGMAX",
+      lua.create_function(|lua, (input, periods): (NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_argmax::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "ARGMAX_RAW",
+      lua.create_function(|lua, (input, periods): (NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_argmax_raw::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "ARGMIN",
+      lua.create_function(|lua, (input, periods): (NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_argmin::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "ARGMIN_RAW",
+      lua.create_function(|lua, (input, periods): (NumArray, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_argmin_raw::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "BACKFILL",
       lua.create_function(|lua, (input,): (NumArray,)| {
         let mut r = vec![0.0; input.len()];
@@ -128,6 +160,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "CORR_NAN",
+      lua.create_function(|lua, (left, right, periods, min_count): (NumArray, NumArray, usize, usize)| {
+        let mut r = vec![0.0; left.len()];
+        ta_corr_nan::<f64>(&ctx(lua), &mut r, &left, &right, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "COUNT",
       lua.create_function(|lua, (input, periods): (BoolArray, usize)| {
         let mut r = vec![0.0; input.len()];
@@ -161,6 +201,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "COV_NAN",
+      lua.create_function(|lua, (left, right, periods, min_count): (NumArray, NumArray, usize, usize)| {
+        let mut r = vec![0.0; left.len()];
+        ta_cov_nan::<f64>(&ctx(lua), &mut r, &left, &right, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "CROSS",
       lua.create_function(|lua, (a, b): (NumArray, NumArray)| {
         let mut r = vec![false; a.len()];
@@ -189,6 +237,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_ema::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "EMA_ADJUST",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_ema_adjust::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;
@@ -448,6 +504,22 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "MAX_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_max_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "MEAN_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_mean_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "MEDIAN",
       lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
         let mut r = vec![0.0; input.len()];
@@ -468,6 +540,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_min_max_diff::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "MIN_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_min_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;
@@ -500,6 +580,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods, q): (NumArray, usize, f64)| {
         let mut r = vec![0.0; input.len()];
         ta_quantile::<f64>(&ctx(lua), &mut r, &input, periods, q)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "QUANTILE_NAN",
+      lua.create_function(|lua, (input, periods, min_count, q): (NumArray, usize, usize, f64)| {
+        let mut r = vec![0.0; input.len()];
+        ta_quantile_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count, q)?;
         Ok(NumArray::from(r))
       })?,
     )?;
@@ -585,6 +673,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "SKEW_EXACT",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_skew_exact::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "SKEWNESS",
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
@@ -618,6 +714,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       })?,
     )?;
     lua.globals().set(
+      "STD_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_std_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
       "STDDEV",
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
@@ -630,6 +734,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_sum::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "SUM_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_sum_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;
@@ -654,6 +766,14 @@ pub fn register_ta_funcs(lua: &Lua) -> LuaResult<()> {
       lua.create_function(|lua, (input, periods): (NumArray, usize)| {
         let mut r = vec![0.0; input.len()];
         ta_var::<f64>(&ctx(lua), &mut r, &input, periods)?;
+        Ok(NumArray::from(r))
+      })?,
+    )?;
+    lua.globals().set(
+      "VAR_NAN",
+      lua.create_function(|lua, (input, periods, min_count): (NumArray, usize, usize)| {
+        let mut r = vec![0.0; input.len()];
+        ta_var_nan::<f64>(&ctx(lua), &mut r, &input, periods, min_count)?;
         Ok(NumArray::from(r))
       })?,
     )?;

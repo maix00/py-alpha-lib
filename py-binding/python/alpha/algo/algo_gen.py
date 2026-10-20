@@ -105,6 +105,78 @@ def ANY[A: np.ndarray | list[np.ndarray]](
     _algo.any(r, condition, periods)
     return r
 
+def ARGMAX[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int
+) -> A:
+  """
+  Rolling argmax of the trailing window.
+  
+  Ties resolve to the most recent bar; a fully missing window returns the
+  neutral position 0; the first `periods - 1` bars are NaN. When `normalized`
+  is true the output is `position / (periods - 1)`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.argmax(r, input, periods)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.argmax(r, input, periods)
+    return r
+
+def ARGMAX_RAW[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int
+) -> A:
+  """
+  Rolling argmax expressed as a window offset in `0..periods-1`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.argmax_raw(r, input, periods)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.argmax_raw(r, input, periods)
+    return r
+
+def ARGMIN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int
+) -> A:
+  """
+  Rolling argmin of the trailing window; same contract as `ta_argmax`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.argmin(r, input, periods)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.argmin(r, input, periods)
+    return r
+
+def ARGMIN_RAW[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int
+) -> A:
+  """
+  Rolling argmin expressed as a window offset in `0..periods-1`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.argmin_raw(r, input, periods)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.argmin_raw(r, input, periods)
+    return r
+
 def BACKFILL[A: np.ndarray | list[np.ndarray]](
   input: A
 ) -> A:
@@ -358,6 +430,25 @@ def CORR2[A: np.ndarray | list[np.ndarray]](
     _algo.corr2(r, x, y, periods)
     return r
 
+def CORR_NAN[A: np.ndarray | list[np.ndarray]](
+  left: A, right: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling correlation on pairwise-valid observations.
+  """
+  if isinstance(left, list) and isinstance(right, list):
+    left = [_to_f64(x) for x in left]
+    right = [_to_f64(x) for x in right]
+    r = [np.empty_like(x) for x in left]
+    _algo.corr_nan(r, left, right, periods, min_count)
+    return r
+  else:
+    left = _to_f64(left)
+    right = _to_f64(right)
+    r = np.empty_like(left)
+    _algo.corr_nan(r, left, right, periods, min_count)
+    return r
+
 def COUNT[A: np.ndarray | list[np.ndarray]](
   input: A, periods: int
 ) -> A:
@@ -438,6 +529,25 @@ def COV[A: np.ndarray | list[np.ndarray]](
     _algo.cov(r, x, y, periods)
     return r
 
+def COV_NAN[A: np.ndarray | list[np.ndarray]](
+  left: A, right: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling covariance on pairwise-valid observations (ddof=1).
+  """
+  if isinstance(left, list) and isinstance(right, list):
+    left = [_to_f64(x) for x in left]
+    right = [_to_f64(x) for x in right]
+    r = [np.empty_like(x) for x in left]
+    _algo.cov_nan(r, left, right, periods, min_count)
+    return r
+  else:
+    left = _to_f64(left)
+    right = _to_f64(right)
+    r = np.empty_like(left)
+    _algo.cov_nan(r, left, right, periods, min_count)
+    return r
+
 def CROSS[A: np.ndarray | list[np.ndarray]](
   a: A, b: A
 ) -> A:
@@ -497,6 +607,28 @@ def DMA_V[A: np.ndarray | list[np.ndarray]](
     weight = _to_f64(weight)
     r = np.empty_like(input)
     _algo.dma_v(r, input, weight)
+    return r
+
+def EMA_ADJUST[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Exponential moving average matching pandas `ewm(span=periods, adjust=True, ignore_na=False).mean()`.
+  
+  Every bar multiplies the running numerator and denominator by `1 - alpha`
+  (missing bars included). Observed bars then add the value / unit weight;
+  missing bars only decay, and the output repeats the previous EMA value.
+  `min_count` counts observed bars, matching pandas `min_periods`.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.ema_adjust(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.ema_adjust(r, input, periods, min_count)
     return r
 
 def EMA_V[A: np.ndarray | list[np.ndarray]](
@@ -1147,6 +1279,40 @@ def MAX_DRAWDOWN[A: np.ndarray | list[np.ndarray]](
     _algo.max_drawdown(r, input, periods)
     return r
 
+def MAX_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling maximum that skips missing observations.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.max_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.max_nan(r, input, periods, min_count)
+    return r
+
+def MEAN_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling mean that skips missing observations; NaN until `min_count` valid points.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.mean_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.mean_nan(r, input, periods, min_count)
+    return r
+
 def MEDIAN[A: np.ndarray | list[np.ndarray]](
   input: A, periods: int, min_count: int
 ) -> A:
@@ -1203,6 +1369,23 @@ def MIN_MAX_DIFF[A: np.ndarray | list[np.ndarray]](
     input = _to_f64(input)
     r = np.empty_like(input)
     _algo.min_max_diff(r, input, periods)
+    return r
+
+def MIN_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling minimum that skips missing observations.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.min_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.min_nan(r, input, periods, min_count)
     return r
 
 def MOMENT[A: np.ndarray | list[np.ndarray]](
@@ -1288,6 +1471,27 @@ def QUANTILE[A: np.ndarray | list[np.ndarray]](
     input = _to_f64(input)
     r = np.empty_like(input)
     _algo.quantile(r, input, periods, q)
+    return r
+
+def QUANTILE_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int, q: float
+) -> A:
+  """
+  Rolling quantile with linear interpolation and NaN skipping.
+  
+  Matches numpy/pandas `rolling(periods, min_periods=min_count).quantile(q)`:
+  only observed values participate, and the position is `q * (n - 1)` with
+  linear interpolation between neighbours.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.quantile_nan(r, input, periods, min_count, q)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.quantile_nan(r, input, periods, min_count, q)
     return r
 
 def RANK[A: np.ndarray | list[np.ndarray]](
@@ -1497,6 +1701,27 @@ def SHARPE[A: np.ndarray | list[np.ndarray]](
     _algo.sharpe(r, input, periods)
     return r
 
+def SKEW_EXACT[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling skewness matching pandas `rolling(periods, min_periods=min_count).skew()`.
+  
+  Two-pass window computation with the bias-corrected Fisher-Pearson G1
+  formula. Fewer than three valid observations yield NaN; a zero-variance
+  window yields 0 (pandas behaviour).
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.skew_exact(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.skew_exact(r, input, periods, min_count)
+    return r
+
 def SKEWNESS[A: np.ndarray | list[np.ndarray]](
   input: A, periods: int
 ) -> A:
@@ -1577,6 +1802,23 @@ def SMA_V[A: np.ndarray | list[np.ndarray]](
     _algo.sma_v(r, input, ns, m)
     return r
 
+def STD_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling sample standard deviation (ddof=1) that skips missing observations.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.std_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.std_nan(r, input, periods, min_count)
+    return r
+
 def STDDEV[A: np.ndarray | list[np.ndarray]](
   input: A, periods: int
 ) -> A:
@@ -1615,6 +1857,23 @@ def SUM[A: np.ndarray | list[np.ndarray]](
     input = _to_f64(input)
     r = np.empty_like(input)
     _algo.sum(r, input, periods)
+    return r
+
+def SUM_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling sum that skips missing observations.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.sum_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.sum_nan(r, input, periods, min_count)
     return r
 
 def SUMBARS[A: np.ndarray | list[np.ndarray]](
@@ -1674,6 +1933,23 @@ def VAR[A: np.ndarray | list[np.ndarray]](
     input = _to_f64(input)
     r = np.empty_like(input)
     _algo.var(r, input, periods)
+    return r
+
+def VAR_NAN[A: np.ndarray | list[np.ndarray]](
+  input: A, periods: int, min_count: int
+) -> A:
+  """
+  Rolling sample variance (ddof=1) that skips missing observations.
+  """
+  if isinstance(input, list):
+    input = [_to_f64(x) for x in input]
+    r = [np.empty_like(x) for x in input]
+    _algo.var_nan(r, input, periods, min_count)
+    return r
+  else:
+    input = _to_f64(input)
+    r = np.empty_like(input)
+    _algo.var_nan(r, input, periods, min_count)
     return r
 
 def WEIGHTED_DELAY[A: np.ndarray | list[np.ndarray]](

@@ -6,6 +6,10 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - ALL(condition: np.ndarray[bool], periods: int): Check if condition is always true within moving window of `periods` (or cumulative if `periods` is 0)  ALL(cond, periods)
 - ALPHA(input: np.ndarray[float], benchmark: np.ndarray[float], periods: int): Rolling Jensen's Alpha of asset returns against benchmark returns.  Alpha = mean(input) - Beta * mean(benchmark) Measures excess return of an asset relative to its expected return given beta.
 - ANY(condition: np.ndarray[bool], periods: int): Check if condition is true at least once within moving window of `periods` (or cumulative if `periods` is 0)  ANY(cond, periods)
+- ARGMAX(input: np.ndarray[float], periods: int): Rolling argmax of the trailing window.  Ties resolve to the most recent bar; a fully missing window returns the neutral position 0; the first `periods - 1` bars are NaN. When `normalized` is true the output is `position / (periods - 1)`.
+- ARGMAX_RAW(input: np.ndarray[float], periods: int): Rolling argmax expressed as a window offset in `0..periods-1`.
+- ARGMIN(input: np.ndarray[float], periods: int): Rolling argmin of the trailing window; same contract as `ta_argmax`.
+- ARGMIN_RAW(input: np.ndarray[float], periods: int): Rolling argmin expressed as a window offset in `0..periods-1`.
 - BACKFILL(input: np.ndarray[float]): Forward-fill NaN values with the last valid observation  Iterates forward through each group; if x[i] is NaN, copies the last valid value. Leading NaNs (before any valid value) remain NaN.
 - BACKSET(condition: np.ndarray[bool], periods: int): If condition is true, set current position and previous `periods - 1` periods (total `periods` bars) to true  BACKSET(cond, periods)
 - BARSLAST(input: np.ndarray[bool]): Calculate number of bars since last condition true
@@ -18,14 +22,17 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - CC_ZSCORE(input: np.ndarray[float]): Calculate cross-sectional Z-Score across groups at each time step  Z-Score = (x - mean) / stddev, computed across all groups for each time position. NaN values are excluded from mean/stddev computation. NaN input produces NaN output.
 - CORR(input: np.ndarray[float], periods: int): Time Series Correlation in moving window on self  Calculates the correlation coefficient between the input series and the time index.
 - CORR2(x: np.ndarray[float], y: np.ndarray[float], periods: int): Calculate two series correlation over a moving window  Correlation = Cov(X, Y) / (StdDev(X) * StdDev(Y))
+- CORR_NAN(left: np.ndarray[float], right: np.ndarray[float], periods: int, min_count: int): Rolling correlation on pairwise-valid observations.
 - COUNT(input: np.ndarray[bool], periods: int): Calculate number of periods where condition is true in passed `periods` window
 - COUNT_NANS(input: np.ndarray[float], periods: int): Count number of NaN values in a rolling window  For each position, counts the number of NaN values in the preceding `periods` elements.
 - COUNT_V(input: np.ndarray[bool], periods: np.ndarray[int]): Calculate number of periods where condition is true in passed variable `periods` window
 - COV(x: np.ndarray[float], y: np.ndarray[float], periods: int): Calculate Covariance over a moving window  Covariance = (SumXY - (SumX * SumY) / N) / (N - 1)
+- COV_NAN(left: np.ndarray[float], right: np.ndarray[float], periods: int, min_count: int): Rolling covariance on pairwise-valid observations (ddof=1).
 - CROSS(a: np.ndarray[float], b: np.ndarray[float]): For 2 arrays A and B, return true if A[i-1] < B[i-1] and A[i] >= B[i] alias: golden_cross, cross_ge
 - DMA(input: np.ndarray[float], weight: float): Exponential Moving Average current = weight * current + (1 - weight) * previous
 - DMA_V(input: np.ndarray[float], weight: np.ndarray[float]): Exponential Moving Average with variable weight
 - EMA(input: np.ndarray[float], periods: int): Exponential Moving Average (variant of well-known EMA) weight = 2 / (n + 1)
+- EMA_ADJUST(input: np.ndarray[float], periods: int, min_count: int): Exponential moving average matching pandas `ewm(span=periods, adjust=True, ignore_na=False).mean()`.  Every bar multiplies the running numerator and denominator by `1 - alpha` (missing bars included). Observed bars then add the value / unit weight; missing bars only decay, and the output repeats the previous EMA value. `min_count` counts observed bars, matching pandas `min_periods`.
 - EMA_V(input: np.ndarray[float], periods: np.ndarray[int]): Exponential Moving Average with variable periods
 - ENTROPY(input: np.ndarray[float], periods: int, bins: int): Calculate rolling Shannon entropy over a moving window  Discretizes values into `bins` equal-width buckets within the window's [min, max] range, then computes -sum(p * ln(p)) where p is the frequency of each occupied bin. Uses natural log (base e). Requires at least 2 valid values. Single-value windows return 0.
 - FILTER(condition: np.ndarray[bool], periods: int): Filter consecutive signals: once condition is true, set subsequent `periods` periods to false  FILTER(cond, periods)
@@ -57,13 +64,17 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - MAD(input: np.ndarray[float], periods: int, min_count: int): Rolling median absolute deviation: median(|x - median(window)|).
 - MAX(a: np.ndarray[float], b: np.ndarray[float]): Calculate element-wise maximum of two arrays  MAX(a, b) = max(a, b)
 - MAX_DRAWDOWN(input: np.ndarray[float], periods: int): Rolling Maximum Drawdown.  MaxDrawdown = minimum peak-to-trough decline within the rolling window. Result is expressed as a negative return (e.g. -0.2 means 20% drawdown from peak). Input should be a price or equity curve series.
+- MAX_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling maximum that skips missing observations.
+- MEAN_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling mean that skips missing observations; NaN until `min_count` valid points.
 - MEDIAN(input: np.ndarray[float], periods: int, min_count: int): Rolling median with an explicit minimum valid count.
 - MIN(a: np.ndarray[float], b: np.ndarray[float]): Calculate element-wise minimum of two arrays  MIN(a, b) = min(a, b)
 - MIN_MAX_DIFF(input: np.ndarray[float], periods: int): Calculate rolling min-max difference (range) over a moving window  TS_MIN_MAX_DIFF = TS_MAX(x, d) - TS_MIN(x, d) Single-pass using two monotonic deques for efficiency.
+- MIN_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling minimum that skips missing observations.
 - MOMENT(input: np.ndarray[float], periods: int, k: int): Calculate rolling k-th central moment over a moving window  MOMENT(x, d, k) = mean((x - mean)^k) over window of d periods. This is the raw (non-adjusted) sample moment. k=2 gives variance (population), k=3 gives raw third moment, etc.
 - NEUTRALIZE(category: np.ndarray[float], input: np.ndarray[float]): Neutralize the effect of a categorical variable on a numeric variable
 - PRODUCT(input: np.ndarray[float], periods: int): Calculate product of values in preceding `periods` window  If periods is 0, it calculates the cumulative product from the first valid value.
 - QUANTILE(input: np.ndarray[float], periods: int, q: float): Calculate rolling quantile over a moving window  QUANTILE(x, d, q) returns the q-th quantile (0 <= q <= 1) of values in the preceding d periods. Uses linear interpolation between data points (matching numpy/pandas percentile with interpolation='linear'). NaN values are excluded from the computation. Requires at least 1 valid value.
+- QUANTILE_NAN(input: np.ndarray[float], periods: int, min_count: int, q: float): Rolling quantile with linear interpolation and NaN skipping.  Matches numpy/pandas `rolling(periods, min_periods=min_count).quantile(q)`: only observed values participate, and the position is `q * (n - 1)` with linear interpolation between neighbours.
 - RANK(input: np.ndarray[float], periods: int): Calculate rank in a sliding window with size `periods`  Uses min-rank method for ties (same as pandas rankdata method='min'). NaN values are treated as larger than all non-NaN values.
 - RCROSS(a: np.ndarray[float], b: np.ndarray[float]): For 2 arrays A and B, return true if A[i-1] > B[i-1] and A[i] <= B[i] alias: death_cross, cross_le
 - REF(input: np.ndarray[float], periods: int): Right shift input array by `periods`, r[i] = input[i - periods]
@@ -74,15 +85,19 @@ the `np.ndarray` is `ndarray` type in `numpy` package
 - SCAN_ADD(input: np.ndarray[float], condition: np.ndarray[bool]): Conditional cumulative add: r[t] = r[t-1] + (cond[t] ? input[t] : 0)  Used for SELF-referencing alpha expressions with additive accumulation. Serial within each stock, parallel across stocks via rayon.
 - SCAN_MUL(input: np.ndarray[float], condition: np.ndarray[bool]): Conditional cumulative multiply: r[t] = r[t-1] * (cond[t] ? input[t] : 1)  Used for SELF-referencing alpha expressions like GTJA #143. Serial within each stock, parallel across stocks via rayon.
 - SHARPE(input: np.ndarray[float], periods: int): Rolling Sharpe Ratio of returns.  Sharpe = mean(returns) / stddev(returns) Measures risk-adjusted return over a rolling window.
+- SKEW_EXACT(input: np.ndarray[float], periods: int, min_count: int): Rolling skewness matching pandas `rolling(periods, min_periods=min_count).skew()`.  Two-pass window computation with the bias-corrected Fisher-Pearson G1 formula. Fewer than three valid observations yield NaN; a zero-variance window yields 0 (pandas behaviour).
 - SKEWNESS(input: np.ndarray[float], periods: int): Calculate rolling sample Skewness over a moving window  Uses adjusted Fisher-Pearson formula (matches pandas): skew = n / ((n-1)(n-2)) * sum(((x-mean)/std)^3) Requires at least 3 valid values.
 - SLOPE(input: np.ndarray[float], periods: int): Linear Regression Slope  Calculates the slope of the linear regression line for a moving window.
 - SMA(input: np.ndarray[float], n: int, m: int): Exponential Moving Average (variant of well-known EMA) weight = m / n
 - SMA_V(input: np.ndarray[float], ns: np.ndarray[int], m: int): Exponential Moving Average (variant of well-known EMA) weight = m / n with variable periods
+- STD_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling sample standard deviation (ddof=1) that skips missing observations.
 - STDDEV(input: np.ndarray[float], periods: int): Calculate Standard Deviation over a moving window
 - SUM(input: np.ndarray[float], periods: int): Calculate sum of values in preceding `periods` window  If periods is 0, it calculates the cumulative sum from the first valid value.
+- SUM_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling sum that skips missing observations.
 - SUMBARS(input: np.ndarray[float], amount: float): Calculate number of periods (bars) backwards until the sum of values is greater than or equal to `amount`
 - SUMIF(input: np.ndarray[float], condition: np.ndarray[bool], periods: int): Calculate sum of values in preceding `periods` window where `condition` is true
 - VAR(input: np.ndarray[float], periods: int): Calculate Variance over a moving window  Variance = (SumSq - (Sum^2)/N) / (N - 1)
+- VAR_NAN(input: np.ndarray[float], periods: int, min_count: int): Rolling sample variance (ddof=1) that skips missing observations.
 - WEIGHTED_DELAY(input: np.ndarray[float], periods: int): Calculate weighted delay (exponentially weighted lag)  WEIGHTED_DELAY(x, k) = (k * x[t-1] + (k-1) * x[t-2] + ... + 1 * x[t-k]) / (k*(k+1)/2) This is essentially LWMA applied to the lagged (shifted by 1) series over k periods.
 - WHERE(condition: np.ndarray[bool], a: np.ndarray[float], b: np.ndarray[float]): Choose elements from a or b depending on condition  WHERE(cond, a, b) = a if cond else b
 - ZSCORE(input: np.ndarray[float], periods: int): Calculate rolling Z-Score over a moving window  Z-Score = (x - mean) / stddev, computed over a rolling window of `periods`. Uses sample stddev (ddof=1) to match pandas.
