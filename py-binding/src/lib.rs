@@ -174,6 +174,72 @@ mod algo_impl {
   include!("./algo_bindings.rs");
 }
 
+#[pyclass(unsendable)]
+pub struct EventHeap {
+  heap: std::collections::BinaryHeap<std::cmp::Reverse<EventHeapEntry>>,
+  counter: u64,
+}
+
+struct EventHeapEntry {
+  timestamp: i64,
+  kind: i32,
+  sequence: i32,
+  counter: u64,
+  payload: Py<PyAny>,
+}
+
+impl PartialEq for EventHeapEntry {
+  fn eq(&self, other: &Self) -> bool {
+    (self.timestamp, self.kind, self.sequence, self.counter)
+      == (other.timestamp, other.kind, other.sequence, other.counter)
+  }
+}
+impl Eq for EventHeapEntry {}
+impl PartialOrd for EventHeapEntry {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
+impl Ord for EventHeapEntry {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    (self.timestamp, self.kind, self.sequence, self.counter)
+      .cmp(&(other.timestamp, other.kind, other.sequence, other.counter))
+  }
+}
+
+#[pymethods]
+impl EventHeap {
+  #[new]
+  fn new() -> Self {
+    Self { heap: std::collections::BinaryHeap::new(), counter: 0 }
+  }
+
+  fn push(&mut self, timestamp: i64, kind: i32, sequence: i32, payload: Py<PyAny>) {
+    let counter = self.counter;
+    self.counter += 1;
+    self.heap.push(std::cmp::Reverse(EventHeapEntry {
+      timestamp, kind, sequence, counter, payload,
+    }));
+  }
+
+  fn pop(&mut self, py: Python<'_>) -> Option<(i64, i32, i32, u64, Py<PyAny>)> {
+    self.heap.pop().map(|std::cmp::Reverse(entry)| {
+      (entry.timestamp, entry.kind, entry.sequence, entry.counter, entry.payload.clone_ref(py))
+    })
+  }
+
+  fn peek_key(&self) -> Option<(i64, i32, i32, u64)> {
+    self.heap.peek().map(|std::cmp::Reverse(entry)| {
+      (entry.timestamp, entry.kind, entry.sequence, entry.counter)
+    })
+  }
+
+  #[getter]
+  fn len(&self) -> usize {
+    self.heap.len()
+  }
+}
+
 #[pymodule]
 fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   use algo_impl::*;
@@ -182,6 +248,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
   m.add_function(wrap_pyfunction!(ema, m)?)?;
   m.add_function(wrap_pyfunction!(set_ctx, m)?)?;
+  m.add_class::<EventHeap>()?;
   register_functions(m)?;
   Ok(())
 }
