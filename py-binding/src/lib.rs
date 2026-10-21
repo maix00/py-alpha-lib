@@ -895,7 +895,7 @@ impl NativeGroupSession {
     Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
     Vec<(u64, usize, i32)>, Vec<(u64, usize, f64)>,
     Vec<(usize, u64, usize, f64, f64, f64, f64, f64)>,
-    Vec<(usize, u8, u64, usize)>,
+    Vec<(usize, u8, u64, usize)>, Vec<(usize, u64, usize, f64)>,
   )> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -919,18 +919,19 @@ impl NativeGroupSession {
     let mut sequence = 0u64;
     let mut queue: BinaryHeap<Reverse<(usize, i32, u64, u64)>> = BinaryHeap::new();
     let mut queued: std::collections::HashMap<u64, (usize, f64)> = std::collections::HashMap::new();
+    let mut cancels: Vec<(usize, u64, usize, f64)> = Vec::new();
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
     let mut events = Vec::new();
     for row in 1..rows {
       events.push((row, 0, 0, 0));
-      queue.push(Reverse((row, 0, sequence, 0)));
+      queue.push(Reverse((row, 2, sequence, 0)));
       sequence += 1;
       let signal_offset = row - 1;
       while let Some(Reverse((event_row, kind, _seq, payload))) = queue.peek().copied() {
         if event_row != row { break; }
         queue.pop();
-        if kind == 0 {
+        if kind == 2 {
           let mut ranked: Vec<usize> = (0..columns).collect();
           ranked.sort_by(|&left, &right| {
             factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
@@ -956,6 +957,25 @@ impl NativeGroupSession {
             let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
             deltas[index] = target - positions[index];
           }
+          let mut live_delta = vec![0.0f64; columns];
+          for (_live_id, (live_column, live_quantity)) in queued.iter() {
+            live_delta[*live_column] += *live_quantity;
+          }
+          let mut kept_columns = vec![false; columns];
+          for index in 0..columns {
+            if live_delta[index].abs() <= 1e-12 { continue; }
+            let target_absolute = positions[index] + deltas[index];
+            let projected = positions[index] + live_delta[index];
+            if (target_absolute - projected).abs() <= 1e-12 { kept_columns[index] = true; }
+          }
+          let mut canceled_ids = Vec::new();
+          for (live_id, (live_column, live_quantity)) in queued.iter() {
+            if !kept_columns[*live_column] {
+              cancels.push((row, *live_id, *live_column, *live_quantity));
+              canceled_ids.push(*live_id);
+            }
+          }
+          for canceled_id in canceled_ids { queued.remove(&canceled_id); }
           let mut planned = Vec::new();
           let mut cash_capacity = 0.0;
           let mut cash_required = 0.0;
@@ -993,14 +1013,14 @@ impl NativeGroupSession {
           let execution_row = row + self.execution_delay;
           let mut signal_order_ids = vec![0u64; columns];
           for index in 0..columns {
-            if deltas[index].abs() <= 1e-12 { continue; }
+            if deltas[index].abs() <= 1e-12 || kept_columns[index] { continue; }
             order_id += 1;
             signal_order_ids[index] = order_id;
             attempts.push((order_id, row, 0));
             events.push((row, 1, order_id, index));
           }
           for (index, order_delta) in planned {
-            if order_delta.abs() <= 1e-12 { continue; }
+            if order_delta.abs() <= 1e-12 || signal_order_ids[index] == 0 { continue; }
             let queued_order_id = signal_order_ids[index];
             queued.insert(queued_order_id, (index, order_delta));
             if execution_row < rows {
@@ -1105,7 +1125,7 @@ impl NativeGroupSession {
         }
       }
     }
-    Ok((equity, trades, orders, audits, attempts, pending, constraints, events))
+    Ok((equity, trades, orders, audits, attempts, pending, constraints, events, cancels))
   }
 
   fn run(
