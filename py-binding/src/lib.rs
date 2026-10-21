@@ -619,6 +619,19 @@ impl FeeModel {
   #[new]
   fn new() -> Self { Self }
 
+  fn market_fee(
+    &self, open_quantity: f64, close_yesterday: f64, close_today: f64,
+    price: f64, multiplier: f64,
+    open_ratio: f64, open_fixed: f64,
+    close_ratio: f64, close_fixed: f64,
+    close_today_ratio: f64, close_today_fixed: f64,
+  ) -> f64 {
+    let open_fee = open_quantity.abs() * (price * multiplier * open_ratio + open_fixed);
+    let close_fee = close_yesterday.abs() * (price * multiplier * close_ratio + close_fixed);
+    let today_fee = close_today.abs() * (price * multiplier * close_today_ratio + close_today_fixed);
+    open_fee + close_fee + today_fee
+  }
+
   fn fixed_fee_batch(
     &self, quantities: Vec<f64>, prices: Vec<f64>,
     multipliers: Vec<f64>, rate: f64,
