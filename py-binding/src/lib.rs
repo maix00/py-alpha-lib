@@ -467,6 +467,79 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct NativeTraceBuilder;
+
+#[pymethods]
+impl NativeTraceBuilder {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn build(
+    &self, py: Python<'_>, alias: &str,
+    orders: Vec<(u64, usize, f64, f64, i32)>,
+    audits: Vec<(usize, u64, f64, f64, f64)>,
+    timestamps: Vec<String>, products: Vec<String>,
+  ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
+    let mut audit_by_order = std::collections::HashMap::new();
+    for (row, order_id, _delta, price, _fee) in audits {
+      audit_by_order.insert(order_id, (row, price));
+    }
+    let mut rows = Vec::with_capacity(orders.len() * 6);
+    for (order_id, column, delta, fee, _status) in orders {
+      let (execution_row, price) = audit_by_order.get(&order_id).copied().unwrap_or((1, 0.0));
+      let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
+      let signal_row = execution_row.saturating_sub(1);
+      let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
+      let execution_text = timestamps.get(execution_row).cloned().unwrap_or_default();
+      let product = products.get(column).cloned().unwrap_or_default();
+      let order_text = format!("{alias}-{signal_text}-{order_id}");
+      let quantity = delta.abs();
+      let effect = if delta > 0.0 { "increase" } else { "reduce" };
+      for step in 0..6 {
+        let (step_name, label, timestamp, status, filled, remaining, details) = match step {
+          0 => ("construct_order", "构造原子订单", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
+          1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "submitted", 0.0, quantity, (Some("price"), price)),
+          2 => ("schedule_order_execution", "登记成交事件", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
+          3 => ("resolve_fee_cost", "计算手续费", execution_text.as_str(), "submitted", 0.0, quantity, (Some("mode"), 0.0)),
+          4 => ("apply_order_fill", "订单成交", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
+          _ => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (Some("fee_cost"), fee)),
+        };
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("order_id", &order_text)?;
+        dict.set_item("order_group_id", "")?;
+        dict.set_item("parent_intent_id", "")?;
+        dict.set_item("strategy_id", alias)?;
+        dict.set_item("timestamp", timestamp)?;
+        dict.set_item("step", step_name)?;
+        dict.set_item("label", label)?;
+        dict.set_item("product", &product)?;
+        dict.set_item("quantity", quantity)?;
+        dict.set_item("intent_quantity", quantity)?;
+        dict.set_item("requested_quantity", quantity)?;
+        dict.set_item("filled_quantity", filled)?;
+        dict.set_item("remaining_quantity", remaining)?;
+        dict.set_item("unfilled_quantity", remaining)?;
+        dict.set_item("status", status)?;
+        dict.set_item("leg_role", "atomic_net")?;
+        dict.set_item("offset", "open")?;
+        dict.set_item("execution_effect", effect)?;
+        dict.set_item("revision", 0)?;
+        dict.set_item("effective_price", py.None())?;
+        dict.set_item("fee_cost", fee)?;
+        dict.set_item("reject_reason", py.None())?;
+        let detail_dict = pyo3::types::PyDict::new(py);
+        if let Some(key) = details.0 {
+          detail_dict.set_item(key, details.1)?;
+        }
+        dict.set_item("details", detail_dict)?;
+        rows.push(dict.unbind());
+      }
+    }
+    Ok(rows)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct NativeGroupSession {
   factor: Py<numpy::PyArray2<f64>>,
   prices: Py<numpy::PyArray2<f64>>,
@@ -1565,6 +1638,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
   m.add_class::<NativeGroupSession>()?;
+  m.add_class::<NativeTraceBuilder>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
