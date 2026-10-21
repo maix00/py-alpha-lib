@@ -467,6 +467,59 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct TargetAllocator;
+
+#[pymethods]
+impl TargetAllocator {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn equal_weights(&self, count: usize) -> Vec<f64> {
+    if count == 0 { return Vec::new(); }
+    vec![1.0 / count as f64; count]
+  }
+
+  fn inverse_measure_weights(
+    &self, measures: Vec<f64>, present: Vec<bool>, missing_equal_share: bool,
+  ) -> PyResult<Vec<f64>> {
+    let count = measures.len();
+    if present.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("measure batch length mismatch"));
+    }
+    if count == 0 { return Ok(Vec::new()); }
+    let mut inverse_total = 0.0;
+    let mut inverse = vec![0.0; count];
+    for index in 0..count {
+      if present[index] && measures[index] > 0.0 {
+        inverse[index] = 1.0 / measures[index];
+        inverse_total += inverse[index];
+      }
+    }
+    if inverse_total <= 0.0 {
+      return Ok(vec![1.0 / count as f64; count]);
+    }
+    let mut weights = vec![0.0; count];
+    if missing_equal_share {
+      let missing_count = (0..count).filter(|&index| inverse[index] == 0.0).count();
+      let available_share = 1.0 - missing_count as f64 / count as f64;
+      let equal_share = 1.0 / count as f64;
+      for index in 0..count {
+        weights[index] = if inverse[index] > 0.0 {
+          available_share * inverse[index] / inverse_total
+        } else {
+          equal_share
+        };
+      }
+    } else {
+      for index in 0..count {
+        weights[index] = inverse[index] / inverse_total;
+      }
+    }
+    Ok(weights)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct FeeModel;
 
 #[pymethods]
@@ -951,6 +1004,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_function(wrap_pyfunction!(create_attempt_records, m)?)?;
   m.add_class::<VectorBacktest>()?;
   m.add_class::<FeeModel>()?;
+  m.add_class::<TargetAllocator>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
