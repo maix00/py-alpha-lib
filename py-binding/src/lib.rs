@@ -808,6 +808,25 @@ impl NativeTraceBuilder {
   }
 }
 
+fn exact_sum<I: IntoIterator<Item = f64>>(values: I) -> f64 {
+  let mut partials: Vec<f64> = Vec::new();
+  for value in values {
+    let mut x = value;
+    let mut index = 0usize;
+    for partial_index in 0..partials.len() {
+      let mut y = partials[partial_index];
+      if x.abs() < y.abs() { std::mem::swap(&mut x, &mut y); }
+      let hi = x + y;
+      let lo = y - (hi - x);
+      if lo != 0.0 { partials[index] = lo; index += 1; }
+      x = hi;
+    }
+    partials.truncate(index);
+    partials.push(x);
+  }
+  partials.into_iter().sum()
+}
+
 fn update_native_lots(lots: &mut Vec<(f64, f64)>, delta: f64, price: f64, method: i32) -> f64 {
   if delta.abs() <= 1e-15 { return 0.0; }
   let mut remaining = delta;
@@ -971,12 +990,11 @@ impl NativeGroupSession {
           let start = (self.group_index as f64 * bucket_size).round() as usize;
           let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
           let members = &ranked[start..end.min(columns)];
-          let mut current_equity = cash;
-          if self.margin_ratio < 1.0 {
-            for index in 0..columns { current_equity += margins[index]; }
+          let current_equity = if self.margin_ratio < 1.0 {
+            cash + exact_sum(margins.iter().copied())
           } else {
-            for index in 0..columns { current_equity += positions[index] * prices[[if delayed { row } else { row - 1 }, index]]; }
-          }
+            cash + exact_sum((0..columns).map(|index| positions[index] * prices[[if delayed { row } else { row - 1 }, index]]))
+          };
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           let mut deltas = vec![0.0f64; columns];
           for index in 0..columns {
@@ -1165,12 +1183,11 @@ impl NativeGroupSession {
       let start = (self.group_index as f64 * bucket_size).round() as usize;
       let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
       let members = &ranked[start..end.min(columns)];
-      let mut current_equity = cash;
-      if self.margin_ratio < 1.0 {
-        for index in 0..columns { current_equity += margins[index]; }
+      let current_equity = if self.margin_ratio < 1.0 {
+        cash + exact_sum(margins.iter().copied())
       } else {
-        for index in 0..columns { current_equity += positions[index] * prices[[signal_offset, index]]; }
-      }
+        cash + exact_sum((0..columns).map(|index| positions[index] * prices[[signal_offset, index]]))
+      };
       let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       for index in 0..columns {
         let price = prices[[signal_offset, index]];
