@@ -1453,6 +1453,75 @@ impl CashConstraintKernel {
 }
 
 #[pyclass(unsendable)]
+pub struct ThresholdKernel;
+
+#[pymethods]
+impl ThresholdKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn select_side(
+    &self, values: Vec<f64>, previous: Vec<bool>, mode: &str,
+    entry: f64, exit: f64, quantile_entry: f64, quantile_exit: f64,
+    positive_side: bool,
+  ) -> PyResult<Vec<bool>> {
+    if values.len() != previous.len() {
+      return Err(pyo3::exceptions::PyValueError::new_err("threshold length mismatch"));
+    }
+    let entry_cutoff = if mode == "cross_section_quantile" {
+      quantile_cutoff(&values, quantile_entry, positive_side)
+    } else if positive_side { entry } else { -entry };
+    let exit_cutoff = if mode == "cross_section_quantile" {
+      quantile_cutoff(&values, quantile_exit, positive_side)
+    } else if positive_side { exit } else { -exit };
+    Ok(values.iter().enumerate().map(|(index, value)| {
+      let passes_entry = if positive_side { *value >= entry_cutoff } else { *value <= entry_cutoff };
+      let passes_exit = if positive_side { *value >= exit_cutoff } else { *value <= exit_cutoff };
+      (passes_entry) || (previous[index] && passes_exit)
+    }).collect())
+  }
+
+  fn equal_weights(
+    &self, long_members: Vec<bool>, short_members: Vec<bool>, side_mode: &str,
+  ) -> PyResult<Vec<f64>> {
+    let count = long_members.len();
+    if short_members.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("threshold length mismatch"));
+    }
+    let long_count = long_members.iter().filter(|value| **value).count() as f64;
+    let short_count = short_members.iter().filter(|value| **value).count() as f64;
+    let mut weights = vec![0.0f64; count];
+    if side_mode == "long_short_spread" {
+      for index in 0..count {
+        let long = if long_members[index] && long_count > 0.0 { 0.5 / long_count } else { 0.0 };
+        let short = if short_members[index] && short_count > 0.0 { 0.5 / short_count } else { 0.0 };
+        weights[index] = long - short;
+      }
+    } else if side_mode == "short_only" {
+      if short_count > 0.0 {
+        for index in 0..count { if short_members[index] { weights[index] = -1.0 / short_count; } }
+      }
+    } else if long_count > 0.0 {
+      for index in 0..count { if long_members[index] { weights[index] = 1.0 / long_count; } }
+    }
+    Ok(weights)
+  }
+}
+
+fn quantile_cutoff(values: &[f64], quantile: f64, positive_side: bool) -> f64 {
+  let mut sorted: Vec<f64> = values.iter().copied().filter(|value| value.is_finite()).collect();
+  if sorted.is_empty() { return f64::NAN; }
+  sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+  let q = quantile.clamp(0.0, 1.0);
+  let q = if positive_side { q } else { 1.0 - q };
+  let position = q * (sorted.len() - 1) as f64;
+  let lower = position.floor() as usize;
+  let upper = position.ceil() as usize;
+  let fraction = position - lower as f64;
+  sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+}
+
+#[pyclass(unsendable)]
 pub struct OrderConstructionKernel;
 
 #[pymethods]
@@ -2201,6 +2270,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<TargetAllocator>()?;
   m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<OrderConstructionKernel>()?;
+  m.add_class::<ThresholdKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
   m.add_class::<NativeGroupSession>()?;
