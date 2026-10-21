@@ -559,15 +559,17 @@ pub struct NativeGroupSession {
   lot_sizes: Vec<f64>,
   split_count: i64,
   group_index: i64,
+  enforce_cash: bool,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
-    split_count: i64, group_index: i64,
+    split_count: i64, group_index: i64, enforce_cash: bool,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -578,7 +580,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash })
   }
 
   fn run_event_driven(
@@ -627,21 +629,45 @@ impl NativeGroupSession {
           let mut current_equity = cash;
           for index in 0..columns { current_equity += positions[index] * prices[[row - 1, index]]; }
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+          let mut deltas = vec![0.0f64; columns];
           for index in 0..columns {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
             let target = if members.contains(&index) { weight * current_equity / prices[[row - 1, index]] } else { 0.0 };
             let target = (target / lot).floor() * lot;
-            let order_delta = target - positions[index];
-            if order_delta.abs() > 1e-12 {
-              order_id += 1;
-              pending_order_id[index] = order_id;
-              pending_delta[index] = order_delta;
-              attempts.push((order_id, row, 0));
-              queue.push(Reverse((row, 1, sequence, index)));
-              sequence += 1;
+            deltas[index] = target - positions[index];
+          }
+          let mut planned = Vec::new();
+          if self.enforce_cash {
+            let mut release = 0.0;
+            let mut required = 0.0;
+            for index in 0..columns {
+              let delta = deltas[index];
+              if delta < 0.0 { release += -delta * prices[[row, index]]; }
+              if delta > 0.0 { required += delta * prices[[row, index]]; }
             }
+            let capacity = (cash + release).max(0.0);
+            let scale = if required > capacity + 1e-9 { capacity / required } else { 1.0 };
+            for index in 0..columns {
+              if deltas[index] < 0.0 { planned.push((index, deltas[index])); }
+            }
+            for index in 0..columns {
+              if deltas[index] > 0.0 { planned.push((index, deltas[index] * scale)); }
+            }
+          } else {
+            for index in 0..columns {
+              planned.push((index, deltas[index]));
+            }
+          }
+          for (index, order_delta) in planned {
+            if order_delta.abs() <= 1e-12 { continue; }
+            order_id += 1;
+            pending_order_id[index] = order_id;
+            pending_delta[index] = order_delta;
+            attempts.push((order_id, row, 0));
+            queue.push(Reverse((row, 1, sequence, index)));
+            sequence += 1;
           }
         } else {
           let index = column;
