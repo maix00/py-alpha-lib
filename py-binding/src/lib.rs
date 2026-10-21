@@ -808,6 +808,17 @@ impl NativeTraceBuilder {
   }
 }
 
+fn fast_sum<I: IntoIterator<Item = f64>>(values: I) -> f64 {
+  let mut sum = 0.0f64; let mut compensation = 0.0f64;
+  for value in values {
+    let next = sum + value;
+    if sum.abs() >= value.abs() { compensation += (sum - next) + value; }
+    else { compensation += (value - next) + sum; }
+    sum = next;
+  }
+  sum + compensation
+}
+
 fn exact_sum<I: IntoIterator<Item = f64>>(values: I) -> f64 {
   let mut partials: Vec<f64> = Vec::new();
   for value in values {
@@ -991,9 +1002,9 @@ impl NativeGroupSession {
           let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
           let members = &ranked[start..end.min(columns)];
           let current_equity = if self.margin_ratio < 1.0 {
-            cash + exact_sum(margins.iter().copied())
+            cash + fast_sum(margins.iter().copied())
           } else {
-            cash + exact_sum((0..columns).map(|index| positions[index] * prices[[if delayed { row } else { row - 1 }, index]]))
+            cash + fast_sum((0..columns).map(|index| positions[index] * prices[[if delayed { row } else { row - 1 }, index]]))
           };
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           let mut deltas = vec![0.0f64; columns];
@@ -1190,9 +1201,9 @@ impl NativeGroupSession {
       let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
       let members = &ranked[start..end.min(columns)];
       let current_equity = if self.margin_ratio < 1.0 {
-        cash + exact_sum(margins.iter().copied())
+        cash + fast_sum(margins.iter().copied())
       } else {
-        cash + exact_sum((0..columns).map(|index| positions[index] * prices[[signal_offset, index]]))
+        cash + fast_sum((0..columns).map(|index| positions[index] * prices[[signal_offset, index]]))
       };
       let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       for index in 0..columns {
