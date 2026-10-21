@@ -224,6 +224,8 @@ impl LotBook {
 pub struct LedgerState {
   accounts: std::collections::HashMap<String, LedgerAccount>,
   margins: std::collections::HashMap<String, MarginAccount>,
+  cost_methods: std::collections::HashMap<String, i32>,
+  lots: std::collections::HashMap<String, std::collections::HashMap<String, LotBook>>,
 }
 
 #[pymethods]
@@ -233,6 +235,8 @@ impl LedgerState {
     Self {
       accounts: std::collections::HashMap::new(),
       margins: std::collections::HashMap::new(),
+      cost_methods: std::collections::HashMap::new(),
+      lots: std::collections::HashMap::new(),
     }
   }
 
@@ -267,6 +271,32 @@ impl LedgerState {
       let margin = self.margins.entry(ledger_id.to_string()).or_insert_with(MarginAccount::new);
       let (position, _) = account.position(product);
       margin.update(product, position, price, multiplier, margin_ratio);
+    }
+    realized
+  }
+
+  fn set_cost_method(&mut self, ledger_id: &str, method: i32) {
+    self.cost_methods.insert(ledger_id.to_string(), method);
+  }
+
+  fn apply_lot_fill(
+    &mut self, ledger_id: &str, product: &str, method: i32,
+    quantity: f64, price: f64, multiplier: f64, fee: f64,
+    is_today: i32, offset: i32,
+  ) -> f64 {
+    let method = if method > 0 { method } else { *self.cost_methods.get(ledger_id).unwrap_or(&0) };
+    if !self.lots.contains_key(ledger_id) {
+      self.lots.insert(ledger_id.to_string(), std::collections::HashMap::new());
+    }
+    let books = self.lots.get_mut(ledger_id).unwrap();
+    let book = books.entry(product.to_string()).or_insert_with(|| LotBook::new(method));
+    let realized = book.apply_fill(quantity, price, multiplier, is_today, offset);
+    let quantity_after = book.quantity();
+    if let Some(account) = self.accounts.get_mut(ledger_id) {
+      let prior_cost = account.positions.get(product).map(|entry| entry.1).unwrap_or(0.0);
+      account.positions.insert(product.to_string(), (quantity_after, prior_cost));
+      account.cash -= fee;
+      account.cash -= quantity * price * multiplier;
     }
     realized
   }
