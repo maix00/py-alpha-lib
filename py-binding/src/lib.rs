@@ -539,7 +539,7 @@ impl NativeGroupSession {
           let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
           let members = &ranked[start..end.min(columns)];
           let mut current_equity = cash;
-          for index in 0..columns { current_equity += positions[index] * prices[[row, index]]; }
+          for index in 0..columns { current_equity += positions[index] * prices[[row - 1, index]]; }
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           for index in 0..columns {
             let price = prices[[row, index]];
@@ -611,7 +611,7 @@ impl NativeGroupSession {
       let members = &ranked[start..end.min(columns)];
       let mut current_equity = cash;
       for column in 0..columns {
-        current_equity += positions[column] * prices[[row, column]];
+        current_equity += positions[column] * prices[[row - 1, column]];
       }
       let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       for column in 0..columns {
@@ -686,7 +686,7 @@ impl NativeSession {
     for row in 1..rows {
       let mut current_equity = cash;
       for column in 0..columns {
-        current_equity += positions[column] * prices[[row, column]];
+        current_equity += positions[column] * prices[[row - 1, column]];
       }
       for column in 0..columns {
         let price = prices[[row, column]];
@@ -729,7 +729,7 @@ impl NativeSession {
     for row in 1..rows {
       let mut current_equity = cash;
       for column in 0..columns {
-        current_equity += positions[column] * prices[[row, column]];
+        current_equity += positions[column] * prices[[row - 1, column]];
       }
       for column in 0..columns {
         let price = prices[[row, column]];
