@@ -467,6 +467,28 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct FeeModel;
+
+#[pymethods]
+impl FeeModel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn fixed_fee_batch(
+    &self, quantities: Vec<f64>, prices: Vec<f64>,
+    multipliers: Vec<f64>, rate: f64,
+  ) -> PyResult<Vec<f64>> {
+    let length = quantities.len();
+    if prices.len() != length || multipliers.len() != length {
+      return Err(pyo3::exceptions::PyValueError::new_err("fee batch length mismatch"));
+    }
+    Ok((0..length).map(|index| {
+      (quantities[index] * prices[index] * multipliers[index]).abs() * rate
+    }).collect())
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct VectorBacktest {
   rows: usize,
   columns: usize,
@@ -928,6 +950,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderAttemptRecord>()?;
   m.add_function(wrap_pyfunction!(create_attempt_records, m)?)?;
   m.add_class::<VectorBacktest>()?;
+  m.add_class::<FeeModel>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
