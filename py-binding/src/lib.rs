@@ -853,17 +853,19 @@ pub struct NativeGroupSession {
   margin_ratio: f64,
   cost_method: i32,
   daily_mtm: bool,
+  fee_rates: Vec<(f64, f64)>,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new()))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
     split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
     target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
+    fee_rates: Vec<(f64, f64)>,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -874,7 +876,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates })
   }
 
   fn run_event_driven(
@@ -992,7 +994,13 @@ impl NativeGroupSession {
           let delta = pending_delta[index];
           let price = prices[[row, index]];
           let notional = delta * price;
-          let fee = notional.abs() * fee_rate;
+          let effective_fee_rate = if self.fee_rates.is_empty() {
+            fee_rate
+          } else {
+            let (open_rate, close_rate) = self.fee_rates[index];
+            if positions[index] * delta < 0.0 { close_rate } else { open_rate }
+          };
+          let fee = notional.abs() * effective_fee_rate;
           if self.margin_ratio < 1.0 {
             let realized = update_native_lots(&mut lots[index], delta, price, self.cost_method);
             let margin_before = margins[index];
@@ -1114,7 +1122,13 @@ impl NativeGroupSession {
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
         let notional = delta * price;
-        let fee = notional.abs() * fee_rate;
+        let effective_fee_rate = if self.fee_rates.is_empty() {
+          fee_rate
+        } else {
+          let (open_rate, close_rate) = self.fee_rates[column];
+          if positions[column] * delta < 0.0 { close_rate } else { open_rate }
+        };
+        let fee = notional.abs() * effective_fee_rate;
         cash -= notional + fee;
         positions[column] = target;
         order_id += 1;
