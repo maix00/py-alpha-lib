@@ -277,6 +277,37 @@ impl LedgerState {
     realized
   }
 
+  fn apply_lot_position(
+    &mut self, ledger_id: &str, product: &str, method: i32,
+    quantity: f64, price: f64, multiplier: f64, is_today: i32, offset: i32,
+  ) -> (f64, f64) {
+    let method = if method > 0 { method } else { *self.cost_methods.get(ledger_id).unwrap_or(&0) };
+    if !self.lots.contains_key(ledger_id) {
+      self.lots.insert(ledger_id.to_string(), std::collections::HashMap::new());
+    }
+    let book = self.lots.get_mut(ledger_id).unwrap()
+      .entry(product.to_string()).or_insert_with(|| LotBook::new(method));
+    let realized = book.apply_fill(quantity, price, multiplier, is_today, offset);
+    let quantity_after = book.quantity();
+    if let Some(account) = self.accounts.get_mut(ledger_id) {
+      let prior_cost = account.positions.get(product).map(|entry| entry.1).unwrap_or(0.0);
+      account.positions.insert(product.to_string(), (quantity_after, prior_cost));
+    }
+    (realized, quantity_after)
+  }
+
+  fn settle_margin_fill(
+    &mut self, ledger_id: &str, product: &str, basis_price: f64, ratio: f64,
+    fee: f64, realized: f64, quantity_after: f64, multiplier: f64,
+  ) -> f64 {
+    let Some(account) = self.accounts.get_mut(ledger_id) else { return 0.0 };
+    let margin = self.margins.entry(ledger_id.to_string()).or_insert_with(MarginAccount::new);
+    let prior_margin = margin.product_margin(product);
+    let after_margin = margin.update(product, quantity_after, basis_price, multiplier, ratio);
+    account.cash += realized - fee - (after_margin - prior_margin);
+    after_margin
+  }
+
   fn apply_margin_fill(
     &mut self, ledger_id: &str, product: &str,
     quantity: f64, price: f64, multiplier: f64, fee: f64,
