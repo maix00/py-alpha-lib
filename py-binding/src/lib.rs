@@ -638,16 +638,18 @@ pub struct NativeGroupSession {
   group_index: i64,
   enforce_cash: bool,
   round_to_lot: bool,
+  target_scale: f64,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
     split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
+    target_scale: f64,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -658,7 +660,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale })
   }
 
   fn run_event_driven(
@@ -802,7 +804,7 @@ impl NativeGroupSession {
         let price = prices[[signal_offset, index]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-        let target = if members.contains(&index) { weight * current_equity / price } else { 0.0 };
+        let target = if members.contains(&index) { weight * current_equity * self.target_scale / price } else { 0.0 };
         let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let order_delta = target - positions[index];
         if order_delta.abs() > 1e-12 {
