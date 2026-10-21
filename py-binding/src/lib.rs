@@ -479,21 +479,40 @@ impl NativeTraceBuilder {
     orders: Vec<(u64, usize, f64, f64, i32)>,
     audits: Vec<(usize, u64, f64, f64, f64)>,
     timestamps: Vec<String>, execution_timestamps: Vec<String>,
-    products: Vec<String>,
+    products: Vec<String>, initial_cash: f64, base_currency: &str,
   ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
     let mut audit_by_order = std::collections::HashMap::new();
     for (row, order_id, _delta, price, _fee) in audits {
       audit_by_order.insert(order_id, (row, price));
+    }
+    let mut positions: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
+    let mut cash = initial_cash;
+    let mut order_info: std::collections::HashMap<u64, (f64, f64, &'static str, f64, f64, String, String)> = std::collections::HashMap::new();
+    for (order_id, column, delta, fee, _status) in &orders {
+      let (execution_row, price) = audit_by_order.get(order_id).copied().unwrap_or((1, 0.0));
+      let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
+      let signal_row = execution_row.saturating_sub(1);
+      let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
+      let prior = positions.get(column).copied().unwrap_or(0.0);
+      let leg = if prior * *delta < 0.0 { "close" } else { "open" };
+      let cash_before = cash;
+      cash -= *delta * price + *fee;
+      positions.insert(*column, prior + *delta);
+      let group = format!("{alias}-{signal_text}-group-{order_id}");
+      order_info.insert(*order_id, (
+        price, *fee, leg, cash_before, cash,
+        group.clone(), format!("{group}:intent"),
+      ));
     }
     let mut templates: Vec<Py<pyo3::types::PyDict>> = Vec::with_capacity(6);
     for step in 0..6 {
       let (step_name, label) = match step {
         0 => ("construct_order", "构造原子订单"),
         1 => ("resolve_execution_price", "解析成交价"),
-        2 => ("slippage", "滑点"),
-        3 => ("fee", "手续费"),
+        2 => ("slippage", "计算滑点价格"),
+        3 => ("fee", "计算手续费"),
         4 => ("ledger_update", "成交落账"),
-        _ => ("order_terminal", "订单终态"),
+        _ => ("order_terminal", "订单成交"),
       };
       let template = pyo3::types::PyDict::new(py);
       template.set_item("order_group_id", "")?;
@@ -518,18 +537,25 @@ impl NativeTraceBuilder {
       let order_text = format!("{alias}-{signal_text}-{order_id}");
       let quantity = delta.abs();
       let signed_quantity = delta;
-      let effect = if delta > 0.0 { "increase" } else { "reduce" };
+      let (price, fee, leg, cash_before, cash_after, group_id, parent_id) =
+        order_info.get(&order_id).cloned().unwrap_or((
+          price, fee, "open", initial_cash, initial_cash,
+          format!("{alias}-{signal_text}-group-{order_id}"),
+          format!("{alias}-{signal_text}-group-{order_id}:intent"),
+        ));
       for step in 0..6 {
         let (_step_name, _label, timestamp, status, filled, remaining, details) = match step {
           0 => ("construct_order", "构造原子订单", signal_text.as_str(), "draft", 0.0, quantity, (None, 0.0)),
           1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "accepted", 0.0, quantity, (Some("price"), price)),
           2 => ("slippage", "滑点", execution_text.as_str(), "accepted", 0.0, quantity, (None, 0.0)),
-          3 => ("fee", "手续费", execution_text.as_str(), "accepted", 0.0, quantity, (Some("mode"), 0.0)),
+          3 => ("fee", "计算手续费", execution_text.as_str(), "accepted", 0.0, quantity, (None, 0.0)),
           4 => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
-          _ => ("order_terminal", "订单终态", execution_text.as_str(), "filled", quantity, 0.0, (Some("fee_cost"), fee)),
+          _ => ("order_terminal", "订单成交", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
         };
         let dict = templates[step].bind(py).copy()?;
         dict.set_item("order_id", &order_text)?;
+        dict.set_item("order_group_id", &group_id)?;
+        dict.set_item("parent_intent_id", &parent_id)?;
         dict.set_item("strategy_id", alias)?;
         dict.set_item("timestamp", timestamp)?;
         dict.set_item("product", &product)?;
@@ -540,9 +566,58 @@ impl NativeTraceBuilder {
         dict.set_item("remaining_quantity", remaining)?;
         dict.set_item("unfilled_quantity", remaining)?;
         dict.set_item("status", status)?;
-        dict.set_item("execution_effect", effect)?;
-        dict.set_item("fee_cost", fee)?;
+        dict.set_item("leg_role", leg)?;
+        dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
+        dict.set_item(
+          "execution_effect",
+          if step < 2 { "mixed" } else if delta > 0.0 { "increase" } else { "reduce" },
+        )?;
+        if step == 0 {
+          dict.set_item("effective_price", py.None())?;
+        } else {
+          dict.set_item("effective_price", price)?;
+        }
+        if step < 3 {
+          dict.set_item("fee_cost", py.None())?;
+        } else {
+          dict.set_item("fee_cost", fee)?;
+        }
         let detail_dict = pyo3::types::PyDict::new(py);
+        match step {
+          0 => {
+            detail_dict.set_item("group_policy", "sequential_close_then_open")?;
+            let children = pyo3::types::PyTuple::new(py, [order_text.as_str()])?;
+            detail_dict.set_item("child_order_ids", children)?;
+            detail_dict.set_item("paired_execution_policy", py.None())?;
+          }
+          1 => {
+            detail_dict.set_item("basis", "open")?;
+            detail_dict.set_item("price", price)?;
+          }
+          2 => {
+            detail_dict.set_item("mode", "none")?;
+            detail_dict.set_item("slippage_bps", 0.0)?;
+            detail_dict.set_item("base_price", price)?;
+          }
+          3 => {
+            detail_dict.set_item("mode", "zero")?;
+            detail_dict.set_item("fixed_rate", 0.0)?;
+          }
+          4 => {
+            detail_dict.set_item("fill_id", format!("{order_text}:fill:1"))?;
+            detail_dict.set_item("ledger_id", format!("private:{alias}"))?;
+            detail_dict.set_item("cash_pool_id", format!("private:{alias}"))?;
+            detail_dict.set_item("account_currency", base_currency)?;
+            detail_dict.set_item("cash_pool_base_currency", base_currency)?;
+            detail_dict.set_item("price", price)?;
+            detail_dict.set_item("fee_cost", fee)?;
+            detail_dict.set_item("cash_before", cash_before)?;
+            detail_dict.set_item("cash_after", cash_after)?;
+            detail_dict.set_item("margin_before", 0.0)?;
+            detail_dict.set_item("margin_after", 0.0)?;
+          }
+          _ => {}
+        }
         if let Some(key) = details.0 {
           detail_dict.set_item(key, details.1)?;
         }
