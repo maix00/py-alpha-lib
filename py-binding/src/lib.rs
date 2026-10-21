@@ -619,6 +619,43 @@ impl FeeModel {
   #[new]
   fn new() -> Self { Self }
 
+  fn split_open_close(&self, quantity: f64, current_quantity: f64) -> (f64, f64) {
+    if quantity == 0.0 { return (0.0, 0.0); }
+    if current_quantity == 0.0 || (quantity > 0.0) == (current_quantity > 0.0) {
+      return (quantity.abs(), 0.0);
+    }
+    let close_qty = quantity.abs().min(current_quantity.abs());
+    ((quantity.abs() - close_qty).max(0.0), close_qty)
+  }
+
+  fn split_close_today_yesterday(
+    &self, close_qty: f64, lot_quantities: Vec<f64>, lot_today: Vec<bool>,
+    lot_prices: Vec<f64>, policy: i32, method: i32,
+  ) -> PyResult<(f64, f64)> {
+    let count = lot_quantities.len();
+    if lot_today.len() != count || lot_prices.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("lot split length mismatch"));
+    }
+    if close_qty <= 1e-12 { return Ok((0.0, 0.0)); }
+    if policy == 1 { return Ok((close_qty, 0.0)); }
+    if policy == 2 || policy == 3 { return Ok((0.0, close_qty)); }
+    let mut order: Vec<usize> = (0..count).collect();
+    if method == 1 { order.reverse(); }
+    else if method == 2 {
+      order.sort_by(|&left, &right| lot_prices[right].partial_cmp(&lot_prices[left]).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut remaining = close_qty;
+    let mut today = 0.0;
+    let mut yesterday = 0.0;
+    for index in order {
+      if remaining <= 1e-12 { break; }
+      let take = remaining.min(lot_quantities[index].abs());
+      if lot_today[index] { today += take; } else { yesterday += take; }
+      remaining -= take;
+    }
+    Ok((today, yesterday + remaining.max(0.0)))
+  }
+
   fn market_fee(
     &self, open_quantity: f64, close_yesterday: f64, close_today: f64,
     price: f64, multiplier: f64,
