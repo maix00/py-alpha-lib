@@ -467,6 +467,97 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct NativeGroupSession {
+  factor: Py<numpy::PyArray2<f64>>,
+  prices: Py<numpy::PyArray2<f64>>,
+  lot_sizes: Vec<f64>,
+  split_count: i64,
+  group_index: i64,
+}
+
+#[pymethods]
+impl NativeGroupSession {
+  #[new]
+  fn new(
+    py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
+    prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
+    split_count: i64, group_index: i64,
+  ) -> PyResult<Self> {
+    let factor_view = factor.bind(py).readonly();
+    let price_view = prices.bind(py).readonly();
+    let (rows, columns) = factor_view.as_array().dim();
+    if price_view.as_array().dim() != (rows, columns) || lot_sizes.len() != columns {
+      return Err(pyo3::exceptions::PyValueError::new_err("native group shape mismatch"));
+    }
+    if split_count <= 0 || group_index < 0 || group_index >= split_count {
+      return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
+    }
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index })
+  }
+
+  fn run(
+    &self, py: Python<'_>, initial_cash: f64, fee_rate: f64,
+  ) -> PyResult<(
+    Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>,
+    Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
+  )> {
+    let factor_view = self.factor.bind(py).readonly();
+    let price_view = self.prices.bind(py).readonly();
+    let factor = factor_view.as_array();
+    let prices = price_view.as_array();
+    let (rows, columns) = factor.dim();
+    let mut positions = vec![0.0f64; columns];
+    let mut cash = initial_cash;
+    let mut equity = vec![initial_cash; rows];
+    let mut trades = Vec::new();
+    let mut orders = Vec::new();
+    let mut audits = Vec::new();
+    let mut order_id = 0u64;
+    for row in 1..rows {
+      let signal_offset = row - 1;
+      let mut ranked: Vec<usize> = (0..columns).collect();
+      ranked.sort_by(|&left, &right| {
+        factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
+          .unwrap_or(std::cmp::Ordering::Equal)
+          .then_with(|| left.cmp(&right))
+      });
+      let bucket_size = columns as f64 / self.split_count as f64;
+      let start = (self.group_index as f64 * bucket_size).round() as usize;
+      let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+      let members = &ranked[start..end.min(columns)];
+      let mut current_equity = cash;
+      for column in 0..columns {
+        current_equity += positions[column] * prices[[row, column]];
+      }
+      let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+      for column in 0..columns {
+        let price = prices[[row, column]];
+        if price <= 0.0 { continue; }
+        let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
+        let target = if members.contains(&column) { weight * current_equity / price } else { 0.0 };
+        let target = (target / lot).floor() * lot;
+        let delta = target - positions[column];
+        if delta.abs() <= 1e-12 { continue; }
+        let notional = delta * price;
+        let fee = notional.abs() * fee_rate;
+        cash -= notional + fee;
+        positions[column] = target;
+        order_id += 1;
+        orders.push((order_id, column, delta, fee, 1));
+        audits.push((row, order_id, delta, price, fee));
+        trades.push((row, column, delta, price, fee, cash));
+      }
+      let mut value = cash;
+      for column in 0..columns {
+        value += positions[column] * prices[[row, column]];
+      }
+      equity[row] = value;
+    }
+    Ok((equity, trades, orders, audits))
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct NativeSession {
   prices: Py<numpy::PyArray2<f64>>,
   targets: Py<numpy::PyArray2<f64>>,
@@ -1389,6 +1480,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
+  m.add_class::<NativeGroupSession>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
