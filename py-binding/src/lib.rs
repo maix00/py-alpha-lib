@@ -5,6 +5,7 @@ use std::sync::{LazyLock, RwLock};
 
 use alpha_algo::Context;
 use pyo3::prelude::*;
+use numpy::PyArrayMethods;
 
 static _ALGO_CTX_: LazyLock<RwLock<Context>> = LazyLock::new(|| RwLock::new(Context::default()));
 
@@ -432,38 +433,48 @@ impl MarginAccount {
 pub struct VectorBacktest {
   rows: usize,
   columns: usize,
-  prices: Vec<f64>,
-  targets: Vec<f64>,
+  prices: Py<numpy::PyArray2<f64>>,
+  targets: Py<numpy::PyArray2<f64>>,
 }
 
 #[pymethods]
 impl VectorBacktest {
   #[new]
-  fn new(rows: usize, columns: usize, prices: Vec<f64>, targets: Vec<f64>) -> PyResult<Self> {
-    if prices.len() != rows * columns || targets.len() != rows * columns {
+  fn new(
+    py: Python<'_>, prices: Py<numpy::PyArray2<f64>>,
+    targets: Py<numpy::PyArray2<f64>>,
+  ) -> PyResult<Self> {
+    let price_view = prices.bind(py).readonly();
+    let target_view = targets.bind(py).readonly();
+    let price_array = price_view.as_array();
+    let target_array = target_view.as_array();
+    let (rows, columns) = price_array.dim();
+    if target_array.dim() != (rows, columns) {
       return Err(pyo3::exceptions::PyValueError::new_err("shape mismatch"));
     }
     Ok(Self { rows, columns, prices, targets })
   }
 
-  fn run(&self, initial_cash: f64, fee_rate: f64, lot_sizes: Vec<f64>) -> Vec<f64> {
+  fn run(&self, py: Python<'_>, initial_cash: f64, fee_rate: f64, lot_sizes: Vec<f64>) -> Vec<f64> {
+    let price_view = self.prices.bind(py).readonly();
+    let target_view = self.targets.bind(py).readonly();
+    let prices = price_view.as_array();
+    let targets = target_view.as_array();
     let mut positions = vec![0.0f64; self.columns];
     let mut cash = initial_cash;
     let mut equity = vec![initial_cash; self.rows];
     for row in 1..self.rows {
-      let price_offset = row * self.columns;
-      let target_offset = (row - 1) * self.columns;
       let mut current_equity = cash;
       for column in 0..self.columns {
-        current_equity += positions[column] * self.prices[price_offset + column];
+        current_equity += positions[column] * prices[[row, column]];
       }
       let mut fees = 0.0;
       let mut cash_flow = 0.0;
       for column in 0..self.columns {
-        let price = self.prices[price_offset + column];
+        let price = prices[[row, column]];
         if price <= 0.0 { continue; }
         let lot = if lot_sizes[column] > 0.0 { lot_sizes[column] } else { 1.0 };
-        let target = self.targets[target_offset + column] * current_equity / price;
+        let target = targets[[row - 1, column]] * current_equity / price;
         let target = (target / lot).floor() * lot;
         let delta = target - positions[column];
         cash_flow += delta * price;
@@ -473,7 +484,7 @@ impl VectorBacktest {
       cash -= cash_flow + fees;
       let mut value = cash;
       for column in 0..self.columns {
-        value += positions[column] * self.prices[price_offset + column];
+        value += positions[column] * prices[[row, column]];
       }
       equity[row] = value;
     }
