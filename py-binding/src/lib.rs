@@ -484,6 +484,28 @@ impl NativeTraceBuilder {
     for (row, order_id, _delta, price, _fee) in audits {
       audit_by_order.insert(order_id, (row, price));
     }
+    let mut templates: Vec<Py<pyo3::types::PyDict>> = Vec::with_capacity(6);
+    for step in 0..6 {
+      let (step_name, label) = match step {
+        0 => ("construct_order", "构造原子订单"),
+        1 => ("resolve_execution_price", "解析成交价"),
+        2 => ("schedule_order_execution", "登记成交事件"),
+        3 => ("resolve_fee_cost", "计算手续费"),
+        4 => ("apply_order_fill", "订单成交"),
+        _ => ("ledger_update", "成交落账"),
+      };
+      let template = pyo3::types::PyDict::new(py);
+      template.set_item("order_group_id", "")?;
+      template.set_item("parent_intent_id", "")?;
+      template.set_item("step", step_name)?;
+      template.set_item("label", label)?;
+      template.set_item("leg_role", "atomic_net")?;
+      template.set_item("offset", "open")?;
+      template.set_item("revision", 0)?;
+      template.set_item("effective_price", py.None())?;
+      template.set_item("reject_reason", py.None())?;
+      templates.push(template.unbind());
+    }
     let mut rows = Vec::with_capacity(orders.len() * 6);
     for (order_id, column, delta, fee, _status) in orders {
       let (execution_row, price) = audit_by_order.get(&order_id).copied().unwrap_or((1, 0.0));
@@ -496,7 +518,7 @@ impl NativeTraceBuilder {
       let quantity = delta.abs();
       let effect = if delta > 0.0 { "increase" } else { "reduce" };
       for step in 0..6 {
-        let (step_name, label, timestamp, status, filled, remaining, details) = match step {
+        let (_step_name, _label, timestamp, status, filled, remaining, details) = match step {
           0 => ("construct_order", "构造原子订单", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
           1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "submitted", 0.0, quantity, (Some("price"), price)),
           2 => ("schedule_order_execution", "登记成交事件", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
@@ -504,14 +526,10 @@ impl NativeTraceBuilder {
           4 => ("apply_order_fill", "订单成交", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
           _ => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (Some("fee_cost"), fee)),
         };
-        let dict = pyo3::types::PyDict::new(py);
+        let dict = templates[step].bind(py).copy()?;
         dict.set_item("order_id", &order_text)?;
-        dict.set_item("order_group_id", "")?;
-        dict.set_item("parent_intent_id", "")?;
         dict.set_item("strategy_id", alias)?;
         dict.set_item("timestamp", timestamp)?;
-        dict.set_item("step", step_name)?;
-        dict.set_item("label", label)?;
         dict.set_item("product", &product)?;
         dict.set_item("quantity", quantity)?;
         dict.set_item("intent_quantity", quantity)?;
@@ -520,13 +538,8 @@ impl NativeTraceBuilder {
         dict.set_item("remaining_quantity", remaining)?;
         dict.set_item("unfilled_quantity", remaining)?;
         dict.set_item("status", status)?;
-        dict.set_item("leg_role", "atomic_net")?;
-        dict.set_item("offset", "open")?;
         dict.set_item("execution_effect", effect)?;
-        dict.set_item("revision", 0)?;
-        dict.set_item("effective_price", py.None())?;
         dict.set_item("fee_cost", fee)?;
-        dict.set_item("reject_reason", py.None())?;
         let detail_dict = pyo3::types::PyDict::new(py);
         if let Some(key) = details.0 {
           detail_dict.set_item(key, details.1)?;
