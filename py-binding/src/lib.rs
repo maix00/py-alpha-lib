@@ -466,6 +466,18 @@ impl MarginAccount {
   }
 }
 
+#[derive(Clone)]
+struct TraceEntry {
+  order_id: u64,
+  column: usize,
+  delta: f64,
+  fee: f64,
+  signal_text: String,
+  execution_text: String,
+  product: String,
+  order_text: String,
+}
+
 #[pyclass(unsendable)]
 pub struct NativeTraceBuilder;
 
@@ -480,6 +492,7 @@ impl NativeTraceBuilder {
     audits: Vec<(usize, u64, f64, f64, f64)>,
     timestamps: Vec<String>, execution_timestamps: Vec<String>,
     products: Vec<String>, initial_cash: f64, base_currency: &str,
+    custom: bool, intents: Vec<(u64, f64)>,
   ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
     let mut audit_by_order = std::collections::HashMap::new();
     for (row, order_id, _delta, price, _fee) in audits {
@@ -526,104 +539,124 @@ impl NativeTraceBuilder {
       template.set_item("reject_reason", py.None())?;
       templates.push(template.unbind());
     }
-    let mut rows = Vec::with_capacity(orders.len() * 6);
-    for (order_id, column, delta, fee, _status) in orders {
-      let (execution_row, price) = audit_by_order.get(&order_id).copied().unwrap_or((1, 0.0));
+    let fee_detail_template = pyo3::types::PyDict::new(py);
+    fee_detail_template.set_item("mode", "zero")?;
+    fee_detail_template.set_item("fixed_rate", 0.0)?;
+    let empty_detail_template = pyo3::types::PyDict::new(py);
+    let mut entries = Vec::with_capacity(orders.len());
+    for (order_id, column, delta, fee, _status) in &orders {
+      let (execution_row, _price) = audit_by_order.get(order_id).copied().unwrap_or((1, 0.0));
       let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
       let signal_row = execution_row.saturating_sub(1);
       let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
       let execution_text = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
-      let product = products.get(column).cloned().unwrap_or_default();
+      let product = products.get(*column).cloned().unwrap_or_default();
       let order_text = format!("{alias}-{signal_text}-{order_id}");
-      let quantity = delta.abs();
-      let signed_quantity = delta;
-      let (price, fee, leg, cash_before, cash_after, group_id, parent_id) =
-        order_info.get(&order_id).cloned().unwrap_or((
-          price, fee, "open", initial_cash, initial_cash,
-          format!("{alias}-{signal_text}-group-{order_id}"),
-          format!("{alias}-{signal_text}-group-{order_id}:intent"),
-        ));
+      entries.push(TraceEntry {
+        order_id: *order_id, column: *column, delta: *delta, fee: *fee,
+        signal_text, execution_text, product, order_text,
+      });
+    }
+    let intent_by_order: std::collections::HashMap<u64, f64> = intents.into_iter().collect();
+    let mut plan: Vec<(String, i32, i64, usize, usize, usize)> = Vec::with_capacity(entries.len() * 6);
+    let mut sequence = 0usize;
+    for (index, entry) in entries.iter().enumerate() {
       for step in 0..6 {
-        let (_step_name, _label, timestamp, status, filled, remaining, details) = match step {
-          0 => ("construct_order", "构造原子订单", signal_text.as_str(), "draft", 0.0, quantity, (None, 0.0)),
-          1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "accepted", 0.0, quantity, (Some("price"), price)),
-          2 => ("slippage", "滑点", execution_text.as_str(), "accepted", 0.0, quantity, (None, 0.0)),
-          3 => ("fee", "计算手续费", execution_text.as_str(), "accepted", 0.0, quantity, (None, 0.0)),
-          4 => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
-          _ => ("order_terminal", "订单成交", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
+        let (timestamp, rank, key) = match step {
+          0 => (entry.signal_text.clone(), 0, entry.order_id as i64),
+          1 => (entry.execution_text.clone(), 1, entry.order_id as i64),
+          2 => (entry.execution_text.clone(), 2, entry.order_id as i64),
+          3 => (entry.execution_text.clone(), 3, entry.order_id as i64),
+          4 => (entry.execution_text.clone(), 5, sequence as i64),
+          _ => (entry.execution_text.clone(), 6, entry.order_id as i64),
         };
-        let dict = templates[step].bind(py).copy()?;
-        dict.set_item("order_id", &order_text)?;
-        dict.set_item("order_group_id", &group_id)?;
-        dict.set_item("parent_intent_id", &parent_id)?;
-        dict.set_item("strategy_id", alias)?;
-        dict.set_item("timestamp", timestamp)?;
-        dict.set_item("product", &product)?;
-        dict.set_item("quantity", signed_quantity)?;
-        dict.set_item("intent_quantity", signed_quantity)?;
-        dict.set_item("requested_quantity", quantity)?;
-        dict.set_item("filled_quantity", filled)?;
-        dict.set_item("remaining_quantity", remaining)?;
-        dict.set_item("unfilled_quantity", remaining)?;
-        dict.set_item("status", status)?;
-        dict.set_item("leg_role", leg)?;
-        dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
-        dict.set_item(
-          "execution_effect",
-          if step < 2 { "mixed" } else if delta > 0.0 { "increase" } else { "reduce" },
-        )?;
-        if step == 0 {
-          dict.set_item("effective_price", py.None())?;
-        } else {
-          dict.set_item("effective_price", price)?;
-        }
-        if step < 3 {
-          dict.set_item("fee_cost", py.None())?;
-        } else {
-          dict.set_item("fee_cost", fee)?;
-        }
-        let detail_dict = pyo3::types::PyDict::new(py);
-        match step {
-          0 => {
-            detail_dict.set_item("group_policy", "sequential_close_then_open")?;
-            let children = pyo3::types::PyTuple::new(py, [order_text.as_str()])?;
-            detail_dict.set_item("child_order_ids", children)?;
-            detail_dict.set_item("paired_execution_policy", py.None())?;
-          }
-          1 => {
-            detail_dict.set_item("basis", "open")?;
-            detail_dict.set_item("price", price)?;
-          }
-          2 => {
-            detail_dict.set_item("mode", "none")?;
-            detail_dict.set_item("slippage_bps", 0.0)?;
-            detail_dict.set_item("base_price", price)?;
-          }
-          3 => {
-            detail_dict.set_item("mode", "zero")?;
-            detail_dict.set_item("fixed_rate", 0.0)?;
-          }
-          4 => {
-            detail_dict.set_item("fill_id", format!("{order_text}:fill:1"))?;
-            detail_dict.set_item("ledger_id", format!("private:{alias}"))?;
-            detail_dict.set_item("cash_pool_id", format!("private:{alias}"))?;
-            detail_dict.set_item("account_currency", base_currency)?;
-            detail_dict.set_item("cash_pool_base_currency", base_currency)?;
-            detail_dict.set_item("price", price)?;
-            detail_dict.set_item("fee_cost", fee)?;
-            detail_dict.set_item("cash_before", cash_before)?;
-            detail_dict.set_item("cash_after", cash_after)?;
-            detail_dict.set_item("margin_before", 0.0)?;
-            detail_dict.set_item("margin_after", 0.0)?;
-          }
-          _ => {}
-        }
-        if let Some(key) = details.0 {
-          detail_dict.set_item(key, details.1)?;
-        }
-        dict.set_item("details", detail_dict)?;
-        rows.push(dict.unbind());
+        plan.push((timestamp, rank, key, sequence, index, step));
+        sequence += 1;
       }
+    }
+    plan.sort();
+    let mut rows = Vec::with_capacity(plan.len());
+    for (_timestamp, _rank, _key, seq, entry_index, step) in plan {
+      let entry = &entries[entry_index];
+      let order_id = entry.order_id;
+      let delta = entry.delta;
+      let fee = entry.fee;
+      let (price, fee_value, leg, cash_before, cash_after, group_id, parent_id) =
+        order_info.get(&order_id).cloned().unwrap_or((
+          0.0, fee, "open", initial_cash, initial_cash,
+          format!("{alias}-{}-group-{order_id}", entry.signal_text),
+          format!("{alias}-{}-group-{order_id}:intent", entry.signal_text),
+        ));
+      let filled_quantity_value = delta.abs();
+      let intent_quantity = intent_by_order.get(&order_id).copied().map(f64::abs).unwrap_or(filled_quantity_value);
+      let sign = if delta < 0.0 { -1.0 } else { 1.0 };
+      let quantity = if step < 4 { intent_quantity } else { filled_quantity_value };
+      let signed_quantity = if step < 4 { sign * intent_quantity } else { delta };
+      let timestamp = if step == 0 { entry.signal_text.as_str() } else { entry.execution_text.as_str() };
+      let (status, filled, remaining) = match step {
+        0 => ("draft", 0.0, quantity),
+        1 | 2 | 3 => ("accepted", 0.0, quantity),
+        _ => ("filled", filled_quantity_value, 0.0),
+      };
+      let dict = templates[step].bind(py).copy()?;
+      dict.set_item("order_id", &entry.order_text)?;
+      dict.set_item("order_group_id", &group_id)?;
+      dict.set_item("parent_intent_id", &parent_id)?;
+      dict.set_item("strategy_id", alias)?;
+      dict.set_item("timestamp", timestamp)?;
+      dict.set_item("product", &entry.product)?;
+      dict.set_item("quantity", signed_quantity)?;
+      dict.set_item("intent_quantity", signed_quantity)?;
+      dict.set_item("requested_quantity", quantity)?;
+      dict.set_item("filled_quantity", filled)?;
+      dict.set_item("remaining_quantity", remaining)?;
+      dict.set_item("unfilled_quantity", remaining)?;
+      dict.set_item("status", status)?;
+      dict.set_item("leg_role", leg)?;
+      dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
+      dict.set_item(
+        "execution_effect",
+        if step < 2 { "mixed" } else if delta > 0.0 { "increase" } else { "reduce" },
+      )?;
+      if step == 0 { dict.set_item("effective_price", py.None())?; }
+      else { dict.set_item("effective_price", price)?; }
+      if step < 3 { dict.set_item("fee_cost", py.None())?; }
+      else { dict.set_item("fee_cost", fee)?; }
+      let detail_dict = if step == 3 {
+        fee_detail_template.copy()?
+      } else if step == 5 {
+        empty_detail_template.copy()?
+      } else {
+        pyo3::types::PyDict::new(py)
+      };
+      match step {
+        0 => {
+          detail_dict.set_item("group_policy", "sequential_close_then_open")?;
+          let children = pyo3::types::PyTuple::new(py, [entry.order_text.as_str()])?;
+          detail_dict.set_item("child_order_ids", children)?;
+          detail_dict.set_item("paired_execution_policy", py.None())?;
+        }
+        1 => { detail_dict.set_item("basis", "open")?; detail_dict.set_item("price", price)?; }
+        2 => { detail_dict.set_item("mode", "none")?; detail_dict.set_item("slippage_bps", 0.0)?; detail_dict.set_item("base_price", price)?; }
+        3 => { detail_dict.set_item("mode", "zero")?; detail_dict.set_item("fixed_rate", 0.0)?; }
+        4 => {
+          detail_dict.set_item("fill_id", format!("{}:fill:1", entry.order_text))?;
+          detail_dict.set_item("ledger_id", format!("private:{alias}"))?;
+          detail_dict.set_item("cash_pool_id", format!("private:{alias}"))?;
+          detail_dict.set_item("account_currency", base_currency)?;
+          detail_dict.set_item("cash_pool_base_currency", base_currency)?;
+          detail_dict.set_item("price", price)?;
+          detail_dict.set_item("fee_cost", fee)?;
+          detail_dict.set_item("cash_before", cash_before)?;
+          detail_dict.set_item("cash_after", cash_after)?;
+          detail_dict.set_item("margin_before", 0.0)?;
+          detail_dict.set_item("margin_after", 0.0)?;
+        }
+        _ => {}
+      }
+      let _ = (fee_value, seq);
+      dict.set_item("details", detail_dict)?;
+      rows.push(dict.unbind());
     }
     Ok(rows)
   }
