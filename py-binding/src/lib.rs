@@ -489,10 +489,10 @@ impl NativeTraceBuilder {
       let (step_name, label) = match step {
         0 => ("construct_order", "构造原子订单"),
         1 => ("resolve_execution_price", "解析成交价"),
-        2 => ("schedule_order_execution", "登记成交事件"),
-        3 => ("resolve_fee_cost", "计算手续费"),
-        4 => ("apply_order_fill", "订单成交"),
-        _ => ("ledger_update", "成交落账"),
+        2 => ("slippage", "滑点"),
+        3 => ("fee", "手续费"),
+        4 => ("ledger_update", "成交落账"),
+        _ => ("order_terminal", "订单终态"),
       };
       let template = pyo3::types::PyDict::new(py);
       template.set_item("order_group_id", "")?;
@@ -519,12 +519,12 @@ impl NativeTraceBuilder {
       let effect = if delta > 0.0 { "increase" } else { "reduce" };
       for step in 0..6 {
         let (_step_name, _label, timestamp, status, filled, remaining, details) = match step {
-          0 => ("construct_order", "构造原子订单", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
-          1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "submitted", 0.0, quantity, (Some("price"), price)),
-          2 => ("schedule_order_execution", "登记成交事件", signal_text.as_str(), "submitted", 0.0, quantity, (None, 0.0)),
-          3 => ("resolve_fee_cost", "计算手续费", execution_text.as_str(), "submitted", 0.0, quantity, (Some("mode"), 0.0)),
-          4 => ("apply_order_fill", "订单成交", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
-          _ => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (Some("fee_cost"), fee)),
+          0 => ("construct_order", "构造原子订单", signal_text.as_str(), "draft", 0.0, quantity, (None, 0.0)),
+          1 => ("resolve_execution_price", "解析成交价", execution_text.as_str(), "accepted", 0.0, quantity, (Some("price"), price)),
+          2 => ("slippage", "滑点", execution_text.as_str(), "accepted", 0.0, quantity, (None, 0.0)),
+          3 => ("fee", "手续费", execution_text.as_str(), "accepted", 0.0, quantity, (Some("mode"), 0.0)),
+          4 => ("ledger_update", "成交落账", execution_text.as_str(), "filled", quantity, 0.0, (None, 0.0)),
+          _ => ("order_terminal", "订单终态", execution_text.as_str(), "filled", quantity, 0.0, (Some("fee_cost"), fee)),
         };
         let dict = templates[step].bind(py).copy()?;
         dict.set_item("order_id", &order_text)?;
@@ -588,7 +588,8 @@ impl NativeGroupSession {
   ) -> PyResult<(
     Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>,
     Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
-    Vec<(u64, usize, i32)>,
+    Vec<(u64, usize, i32)>, Vec<(u64, usize, f64)>,
+    Vec<(usize, u64, usize, f64, f64, f64, f64, f64)>,
   )> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -609,6 +610,7 @@ impl NativeGroupSession {
     let mut pending_delta = vec![0.0f64; columns];
     let mut pending_order_id = vec![0u64; columns];
     let mut attempts = Vec::new();
+    let mut constraints = Vec::new();
     for row in 1..rows {
       queue.push(Reverse((row, 0, sequence, 0)));
       sequence += 1;
@@ -639,6 +641,9 @@ impl NativeGroupSession {
             deltas[index] = target - positions[index];
           }
           let mut planned = Vec::new();
+          let mut cash_capacity = 0.0;
+          let mut cash_required = 0.0;
+          let mut cash_scale = 1.0;
           if self.enforce_cash {
             let mut release = 0.0;
             let mut required = 0.0;
@@ -647,25 +652,32 @@ impl NativeGroupSession {
               if delta < 0.0 { release += -delta * prices[[row, index]]; }
               if delta > 0.0 { required += delta * prices[[row, index]]; }
             }
-            let capacity = (cash + release).max(0.0);
-            let scale = if required > capacity + 1e-9 { capacity / required } else { 1.0 };
+            cash_capacity = (cash + release).max(0.0);
+            cash_required = required;
+            cash_scale = if required > cash_capacity + 1e-9 { cash_capacity / required } else { 1.0 };
             for index in 0..columns {
               if deltas[index] < 0.0 { planned.push((index, deltas[index])); }
             }
             for index in 0..columns {
-              if deltas[index] > 0.0 { planned.push((index, deltas[index] * scale)); }
+              if deltas[index] > 0.0 { planned.push((index, deltas[index] * cash_scale)); }
             }
           } else {
             for index in 0..columns {
               planned.push((index, deltas[index]));
             }
           }
-          for (index, order_delta) in planned {
-            if order_delta.abs() <= 1e-12 { continue; }
+          for index in 0..columns {
+            if deltas[index].abs() <= 1e-12 { continue; }
             order_id += 1;
             pending_order_id[index] = order_id;
-            pending_delta[index] = order_delta;
             attempts.push((order_id, row, 0));
+          }
+          for (index, order_delta) in planned {
+            if order_delta.abs() <= 1e-12 { continue; }
+            pending_delta[index] = order_delta;
+            if self.enforce_cash && deltas[index] > 0.0 && cash_scale < 1.0 {
+              constraints.push((row, pending_order_id[index], index, deltas[index], order_delta, cash_scale, cash_capacity, cash_required));
+            }
             queue.push(Reverse((row, 1, sequence, index)));
             sequence += 1;
           }
@@ -688,7 +700,36 @@ impl NativeGroupSession {
       for index in 0..columns { value += positions[index] * prices[[row, index]]; }
       equity[row] = value;
     }
-    Ok((equity, trades, orders, audits, attempts))
+    let mut pending = Vec::new();
+    if rows > 0 {
+      let signal_offset = rows - 1;
+      let mut ranked: Vec<usize> = (0..columns).collect();
+      ranked.sort_by(|&left, &right| {
+        factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
+          .unwrap_or(std::cmp::Ordering::Equal).then_with(|| left.cmp(&right))
+      });
+      let bucket_size = columns as f64 / self.split_count as f64;
+      let start = (self.group_index as f64 * bucket_size).round() as usize;
+      let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+      let members = &ranked[start..end.min(columns)];
+      let mut current_equity = cash;
+      for index in 0..columns { current_equity += positions[index] * prices[[signal_offset, index]]; }
+      let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+      for index in 0..columns {
+        let price = prices[[signal_offset, index]];
+        if price <= 0.0 { continue; }
+        let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
+        let target = if members.contains(&index) { weight * current_equity / price } else { 0.0 };
+        let target = (target / lot).floor() * lot;
+        let order_delta = target - positions[index];
+        if order_delta.abs() > 1e-12 {
+          order_id += 1;
+          pending.push((order_id, index, order_delta));
+          attempts.push((order_id, signal_offset, 0));
+        }
+      }
+    }
+    Ok((equity, trades, orders, audits, attempts, pending, constraints))
   }
 
   fn run(
