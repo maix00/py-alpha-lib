@@ -569,6 +569,28 @@ impl TargetAllocator {
     Ok(weights)
   }
 
+  fn screen_mask(
+    &self, values: Vec<f64>, present: Vec<bool>, rule: i32,
+    lower: f64, upper: f64,
+  ) -> PyResult<Vec<bool>> {
+    let count = values.len();
+    if present.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("screen batch length mismatch"));
+    }
+    let mut mask = vec![false; count];
+    for index in 0..count {
+      let value = values[index];
+      if !present[index] || !value.is_finite() { continue; }
+      mask[index] = match rule {
+        1 => value >= lower,
+        2 => value <= upper,
+        3 => lower <= value && value <= upper,
+        _ => true,
+      };
+    }
+    Ok(mask)
+  }
+
   fn factor_weights(
     &self, values: Vec<f64>, present: Vec<bool>, inverse: bool,
   ) -> PyResult<Vec<f64>> {
