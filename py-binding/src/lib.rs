@@ -489,6 +489,56 @@ impl NativeSession {
     Ok(Self { prices, targets, lot_sizes })
   }
 
+  fn run_with_lifecycle(
+    &self, py: Python<'_>, initial_cash: f64, fee_rate: f64,
+  ) -> PyResult<(
+    Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>,
+    Vec<(u64, usize, f64, f64, i32)>,
+    Vec<(usize, u64, f64, f64, f64)>,
+  )> {
+    let price_view = self.prices.bind(py).readonly();
+    let target_view = self.targets.bind(py).readonly();
+    let prices = price_view.as_array();
+    let targets = target_view.as_array();
+    let (rows, columns) = prices.dim();
+    let mut positions = vec![0.0f64; columns];
+    let mut cash = initial_cash;
+    let mut equity = vec![initial_cash; rows];
+    let mut trades = Vec::new();
+    let mut orders = Vec::new();
+    let mut audits = Vec::new();
+    let mut order_id = 0u64;
+    for row in 1..rows {
+      let mut current_equity = cash;
+      for column in 0..columns {
+        current_equity += positions[column] * prices[[row, column]];
+      }
+      for column in 0..columns {
+        let price = prices[[row, column]];
+        if price <= 0.0 { continue; }
+        let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
+        let target = targets[[row - 1, column]] * current_equity / price;
+        let target = (target / lot).floor() * lot;
+        let delta = target - positions[column];
+        if delta.abs() <= 1e-12 { continue; }
+        let notional = delta * price;
+        let fee = notional.abs() * fee_rate;
+        cash -= notional + fee;
+        positions[column] = target;
+        order_id += 1;
+        orders.push((order_id, column, delta, fee, 1));
+        audits.push((row, order_id, delta, price, fee));
+        trades.push((row, column, delta, price, fee, cash));
+      }
+      let mut value = cash;
+      for column in 0..columns {
+        value += positions[column] * prices[[row, column]];
+      }
+      equity[row] = value;
+    }
+    Ok((equity, trades, orders, audits))
+  }
+
   fn run(
     &self, py: Python<'_>, initial_cash: f64, fee_rate: f64,
   ) -> PyResult<(Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>)> {
