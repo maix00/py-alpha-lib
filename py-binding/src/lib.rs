@@ -278,6 +278,43 @@ impl LedgerState {
     realized
   }
 
+  fn apply_fills_batch(
+    &mut self, ledger_id: &str, products: Vec<String>,
+    quantities: Vec<f64>, prices: Vec<f64>, multipliers: Vec<f64>,
+    fees: Vec<f64>, margin_ratios: Vec<f64>, margin_accounting: bool,
+  ) -> PyResult<Vec<(f64, f64, f64)>> {
+    let length = products.len();
+    if quantities.len() != length || prices.len() != length
+      || multipliers.len() != length || fees.len() != length
+      || margin_ratios.len() != length
+    {
+      return Err(pyo3::exceptions::PyValueError::new_err("fill batch length mismatch"));
+    }
+    let mut result = Vec::with_capacity(length);
+    for index in 0..length {
+      let Some(account) = self.accounts.get_mut(ledger_id) else {
+        result.push((0.0, 0.0, 0.0));
+        continue;
+      };
+      let realized = account.apply_fill(
+        &products[index], quantities[index], prices[index],
+        multipliers[index], fees[index],
+      );
+      account.cash -= realized;
+      if !margin_accounting {
+        account.cash -= quantities[index] * prices[index] * multipliers[index];
+      }
+      let (position, _) = account.position(&products[index]);
+      let cash = account.cash;
+      if margin_accounting {
+        let margin = self.margins.entry(ledger_id.to_string()).or_insert_with(MarginAccount::new);
+        margin.update(&products[index], position, prices[index], multipliers[index], margin_ratios[index]);
+      }
+      result.push((realized, cash, position));
+    }
+    Ok(result)
+  }
+
   fn apply_lot_position(
     &mut self, ledger_id: &str, product: &str, method: i32,
     quantity: f64, price: f64, multiplier: f64, is_today: i32, offset: i32,
