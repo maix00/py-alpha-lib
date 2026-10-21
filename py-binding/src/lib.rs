@@ -562,7 +562,11 @@ impl NativeTraceBuilder {
       let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
       let signal_row = execution_row.saturating_sub(1 + execution_delay);
       let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
-      let execution_text = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
+      let execution_text = if execution_delay > 0 {
+        timestamps.get(execution_row).cloned().unwrap_or_default()
+      } else {
+        execution_timestamps.get(signal_row).cloned().unwrap_or_default()
+      };
       let product = products.get(*column).cloned().unwrap_or_default();
       let order_text = format!("{alias}-{signal_text}-{order_id}");
       entries.push(TraceEntry {
