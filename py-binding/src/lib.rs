@@ -856,19 +856,20 @@ pub struct NativeGroupSession {
   fee_rates: Vec<(f64, f64)>,
   volume: Option<Py<numpy::PyArray2<f64>>>,
   volume_rate: f64,
+  execution_delay: usize,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
     split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
     target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
     fee_rates: Vec<(f64, f64)>, volume: Option<Py<numpy::PyArray2<f64>>>,
-    volume_rate: f64,
+    volume_rate: f64, execution_delay: usize,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -879,7 +880,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay })
   }
 
   fn run_event_driven(
@@ -911,9 +912,8 @@ impl NativeGroupSession {
     let mut audits = Vec::new();
     let mut order_id = 0u64;
     let mut sequence = 0u64;
-    let mut queue: BinaryHeap<Reverse<(usize, i32, u64, usize)>> = BinaryHeap::new();
-    let mut pending_delta = vec![0.0f64; columns];
-    let mut pending_order_id = vec![0u64; columns];
+    let mut queue: BinaryHeap<Reverse<(usize, i32, u64, u64)>> = BinaryHeap::new();
+    let mut queued: std::collections::HashMap<u64, (usize, f64)> = std::collections::HashMap::new();
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
     let mut events = Vec::new();
@@ -922,7 +922,7 @@ impl NativeGroupSession {
       queue.push(Reverse((row, 0, sequence, 0)));
       sequence += 1;
       let signal_offset = row - 1;
-      while let Some(Reverse((event_row, kind, _seq, column))) = queue.peek().copied() {
+      while let Some(Reverse((event_row, kind, _seq, payload))) = queue.peek().copied() {
         if event_row != row { break; }
         queue.pop();
         if kind == 0 {
@@ -985,25 +985,30 @@ impl NativeGroupSession {
               planned.push((index, deltas[index]));
             }
           }
+          let execution_row = row + self.execution_delay;
+          let mut signal_order_ids = vec![0u64; columns];
           for index in 0..columns {
             if deltas[index].abs() <= 1e-12 { continue; }
             order_id += 1;
-            pending_order_id[index] = order_id;
+            signal_order_ids[index] = order_id;
             attempts.push((order_id, row, 0));
             events.push((row, 1, order_id, index));
           }
           for (index, order_delta) in planned {
             if order_delta.abs() <= 1e-12 { continue; }
-            pending_delta[index] = order_delta;
-            if self.enforce_cash && deltas[index] > 0.0 && cash_scale < 1.0 {
-              constraints.push((row, pending_order_id[index], index, deltas[index], order_delta, cash_scale, cash_capacity, cash_required));
+            let queued_order_id = signal_order_ids[index];
+            queued.insert(queued_order_id, (index, order_delta));
+            if execution_row < rows {
+              if self.enforce_cash && deltas[index] > 0.0 && cash_scale < 1.0 {
+                constraints.push((execution_row, queued_order_id, index, deltas[index], order_delta, cash_scale, cash_capacity, cash_required));
+              }
+              queue.push(Reverse((execution_row, 1, sequence, queued_order_id)));
+              sequence += 1;
             }
-            queue.push(Reverse((row, 1, sequence, index)));
-            sequence += 1;
           }
         } else {
-          let index = column;
-          let intent_delta = pending_delta[index];
+          let order_key = payload;
+          let Some((index, intent_delta)) = queued.remove(&order_key) else { continue; };
           let mut delta = intent_delta;
           if let Some(volume_values) = volume {
             let capacity = volume_values[[row, index]] * self.volume_rate;
@@ -1034,7 +1039,7 @@ impl NativeGroupSession {
             cash -= notional + fee;
             positions[index] += delta;
           }
-          let filled_order_id = pending_order_id[index];
+          let filled_order_id = order_key;
           attempts.push((filled_order_id, row, 1));
           orders.push((filled_order_id, index, intent_delta, fee, 1));
           audits.push((row, filled_order_id, delta, price, fee));
