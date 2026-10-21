@@ -277,6 +277,41 @@ impl LedgerState {
     realized
   }
 
+  fn apply_margin_fill(
+    &mut self, ledger_id: &str, product: &str,
+    quantity: f64, price: f64, multiplier: f64, fee: f64,
+    basis_price: f64, ratio: f64,
+  ) -> f64 {
+    let Some(account) = self.accounts.get_mut(ledger_id) else { return 0.0 };
+    let (prior_quantity, prior_cost) = account.position(product);
+    let new_quantity = prior_quantity + quantity;
+    let epsilon = 1e-12;
+    let mut realized = 0.0;
+    let mut new_cost = prior_cost;
+    if prior_quantity == 0.0 || (prior_quantity > 0.0) == (quantity > 0.0) {
+      new_cost = if new_quantity.abs() <= epsilon {
+        0.0
+      } else {
+        (prior_quantity * prior_cost + quantity * price) / new_quantity
+      };
+    } else {
+      let close_abs = prior_quantity.abs().min(quantity.abs());
+      realized = close_abs * (price - prior_cost) * prior_quantity.signum() * multiplier;
+      if new_quantity.abs() <= epsilon {
+        new_cost = 0.0;
+      } else if quantity.abs() > prior_quantity.abs() {
+        new_cost = price;
+      }
+    }
+    let quantity_after = if new_quantity.abs() <= epsilon { 0.0 } else { new_quantity };
+    account.positions.insert(product.to_string(), (quantity_after, new_cost));
+    let margin = self.margins.entry(ledger_id.to_string()).or_insert_with(MarginAccount::new);
+    let prior_margin = margin.product_margin(product);
+    let after_margin = margin.update(product, quantity_after, basis_price, multiplier, ratio);
+    account.cash += realized - fee - (after_margin - prior_margin);
+    realized
+  }
+
   fn set_cost_method(&mut self, ledger_id: &str, method: i32) {
     self.cost_methods.insert(ledger_id.to_string(), method);
   }
@@ -325,6 +360,10 @@ impl LedgerState {
 
   fn position(&self, ledger_id: &str, product: &str) -> (f64, f64) {
     self.accounts.get(ledger_id).map(|account| account.position(product)).unwrap_or((0.0, 0.0))
+  }
+
+  fn product_margin(&self, ledger_id: &str, product: &str) -> f64 {
+    self.margins.get(ledger_id).map(|account| account.product_margin(product)).unwrap_or(0.0)
   }
 
   fn reserved(&self, ledger_id: &str) -> f64 {
