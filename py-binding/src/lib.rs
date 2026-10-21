@@ -467,6 +467,57 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct OrderLifecycleBatch {
+  accepted: Vec<f64>,
+  filled: Vec<f64>,
+}
+
+#[pymethods]
+impl OrderLifecycleBatch {
+  #[new]
+  fn new(accepted: Vec<f64>, filled: Vec<f64>) -> PyResult<Self> {
+    if accepted.len() != filled.len() {
+      return Err(pyo3::exceptions::PyValueError::new_err("lifecycle batch length mismatch"));
+    }
+    Ok(Self { accepted, filled })
+  }
+
+  fn apply_fills(
+    &mut self, indices: Vec<usize>, quantities: Vec<f64>,
+  ) -> PyResult<Vec<(usize, f64, bool)>> {
+    let length = indices.len();
+    if quantities.len() != length {
+      return Err(pyo3::exceptions::PyValueError::new_err("fill batch length mismatch"));
+    }
+    let mut result = Vec::with_capacity(length);
+    for position in 0..length {
+      let index = indices[position];
+      if index >= self.accepted.len() {
+        return Err(pyo3::exceptions::PyIndexError::new_err("lifecycle index out of range"));
+      }
+      let quantity = quantities[position];
+      if quantity <= 0.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("fill quantity must be positive"));
+      }
+      let remaining = (self.accepted[index] - self.filled[index]).max(0.0);
+      if quantity > remaining + 1e-12 {
+        return Err(pyo3::exceptions::PyValueError::new_err("fill exceeds remaining quantity"));
+      }
+      self.filled[index] += quantity;
+      let completed = self.accepted[index] - self.filled[index] <= 1e-12;
+      result.push((index, self.filled[index], completed));
+    }
+    Ok(result)
+  }
+
+  fn remaining(&self) -> Vec<f64> {
+    (0..self.accepted.len())
+      .map(|index| (self.accepted[index] - self.filled[index]).max(0.0))
+      .collect()
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct TargetAllocator;
 
 #[pymethods]
@@ -1005,6 +1056,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<VectorBacktest>()?;
   m.add_class::<FeeModel>()?;
   m.add_class::<TargetAllocator>()?;
+  m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
