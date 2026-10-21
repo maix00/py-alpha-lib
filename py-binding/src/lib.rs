@@ -803,6 +803,43 @@ impl NativeTraceBuilder {
   }
 }
 
+fn update_native_lots(lots: &mut Vec<(f64, f64)>, delta: f64, price: f64, method: i32) -> f64 {
+  if delta.abs() <= 1e-15 { return 0.0; }
+  let mut remaining = delta;
+  let mut realized = 0.0;
+  while remaining.abs() > 1e-12 {
+    let Some(prior) = lots.first().map(|lot| lot.0) else { break; };
+    if prior * remaining > 0.0 { break; }
+    let position = lots.iter().map(|lot| lot.0).sum::<f64>();
+    if position.abs() <= 1e-15 { break; }
+    let select = if method == 1 {
+      lots.len() - 1
+    } else if method == 2 {
+      lots.iter().enumerate().max_by(|a, b| a.1.1.partial_cmp(&b.1.1).unwrap()).map(|x| x.0).unwrap_or(0)
+    } else { 0 };
+    let (lot_qty, lot_price) = lots[select];
+    let close = remaining.abs().min(lot_qty.abs()) * lot_qty.signum();
+    realized += (price - lot_price) * close;
+    let left = lot_qty - close;
+    if left.abs() <= 1e-12 { lots.remove(select); } else { lots[select].0 = left; }
+    remaining -= close;
+  }
+  if remaining.abs() > 1e-12 {
+    if method == 3 {
+      if let Some(existing) = lots.first_mut() {
+        if existing.0 * remaining > 0.0 {
+          let total = existing.0 + remaining;
+          existing.1 = (existing.1 * existing.0.abs() + price * remaining.abs()) / total.abs();
+          existing.0 = total;
+          return realized;
+        }
+      }
+    }
+    lots.push((remaining, price));
+  }
+  realized
+}
+
 #[pyclass(unsendable)]
 pub struct NativeGroupSession {
   factor: Py<numpy::PyArray2<f64>>,
@@ -813,17 +850,20 @@ pub struct NativeGroupSession {
   enforce_cash: bool,
   round_to_lot: bool,
   target_scale: f64,
+  margin_ratio: f64,
+  cost_method: i32,
+  daily_mtm: bool,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
     split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
-    target_scale: f64,
+    target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -834,7 +874,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm })
   }
 
   fn run_event_driven(
@@ -855,6 +895,9 @@ impl NativeGroupSession {
     let (rows, columns) = factor.dim();
     let mut positions = vec![0.0f64; columns];
     let mut cash = initial_cash;
+    let mut lots: Vec<Vec<(f64, f64)>> = vec![Vec::new(); columns];
+    let mut margins = vec![0.0f64; columns];
+    let mut marks = vec![0.0f64; columns];
     let mut equity = vec![initial_cash; rows];
     let mut trades = Vec::new();
     let mut orders = Vec::new();
@@ -886,7 +929,11 @@ impl NativeGroupSession {
           let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
           let members = &ranked[start..end.min(columns)];
           let mut current_equity = cash;
-          for index in 0..columns { current_equity += positions[index] * prices[[row - 1, index]]; }
+          if self.margin_ratio < 1.0 {
+            for index in 0..columns { current_equity += margins[index]; }
+          } else {
+            for index in 0..columns { current_equity += positions[index] * prices[[row - 1, index]]; }
+          }
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           let mut deltas = vec![0.0f64; columns];
           for index in 0..columns {
@@ -906,8 +953,9 @@ impl NativeGroupSession {
             let mut required = 0.0;
             for index in 0..columns {
               let delta = deltas[index];
-              if delta < 0.0 { release += -delta * prices[[row, index]]; }
-              if delta > 0.0 { required += delta * prices[[row, index]]; }
+              let capacity_weight = if self.margin_ratio < 1.0 { self.margin_ratio } else { 1.0 };
+              if delta < 0.0 { release += -delta * prices[[row, index]] * capacity_weight; }
+              if delta > 0.0 { required += delta * prices[[row, index]] * capacity_weight; }
             }
             cash_capacity = (cash + release).max(0.0);
             cash_required = required;
@@ -945,8 +993,19 @@ impl NativeGroupSession {
           let price = prices[[row, index]];
           let notional = delta * price;
           let fee = notional.abs() * fee_rate;
-          cash -= notional + fee;
-          positions[index] += delta;
+          if self.margin_ratio < 1.0 {
+            let realized = update_native_lots(&mut lots[index], delta, price, self.cost_method);
+            let margin_before = margins[index];
+            let new_position = positions[index] + delta;
+            let margin_after = new_position.abs() * price * self.margin_ratio;
+            cash += margin_before - margin_after + realized - fee;
+            margins[index] = margin_after;
+            positions[index] = new_position;
+            marks[index] = price;
+          } else {
+            cash -= notional + fee;
+            positions[index] += delta;
+          }
           let filled_order_id = pending_order_id[index];
           attempts.push((filled_order_id, row, 1));
           orders.push((filled_order_id, index, delta, fee, 1));
@@ -954,9 +1013,25 @@ impl NativeGroupSession {
           trades.push((row, index, delta, price, fee, cash));
         }
       }
-      let mut value = cash;
-      for index in 0..columns { value += positions[index] * prices[[row, index]]; }
-      equity[row] = value;
+      if self.margin_ratio < 1.0 {
+        if self.daily_mtm {
+          for index in 0..columns {
+            let position = positions[index];
+            if position.abs() <= 1e-15 { continue; }
+            let mark = prices[[row, index]];
+            let margin_before = margins[index];
+            let margin_after = position.abs() * mark * self.margin_ratio;
+            cash += (mark - marks[index]) * position + margin_before - margin_after;
+            margins[index] = margin_after;
+            marks[index] = mark;
+          }
+        }
+        equity[row] = cash + margins.iter().sum::<f64>();
+      } else {
+        let mut value = cash;
+        for index in 0..columns { value += positions[index] * prices[[row, index]]; }
+        equity[row] = value;
+      }
     }
     let mut pending = Vec::new();
     if rows > 0 {
@@ -972,7 +1047,11 @@ impl NativeGroupSession {
       let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
       let members = &ranked[start..end.min(columns)];
       let mut current_equity = cash;
-      for index in 0..columns { current_equity += positions[index] * prices[[signal_offset, index]]; }
+      if self.margin_ratio < 1.0 {
+        for index in 0..columns { current_equity += margins[index]; }
+      } else {
+        for index in 0..columns { current_equity += positions[index] * prices[[signal_offset, index]]; }
+      }
       let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       for index in 0..columns {
         let price = prices[[signal_offset, index]];
