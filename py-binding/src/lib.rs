@@ -993,7 +993,7 @@ impl NativeGroupSession {
           }
           let mut kept_columns = vec![false; columns];
           for index in 0..columns {
-            if (delayed && !members.contains(&index)) || live_delta[index].abs() <= 1e-12 { continue; }
+            if (delayed && !members.contains(&index) && positions[index].abs() <= 1e-12) || live_delta[index].abs() <= 1e-12 { continue; }
             let target_absolute = if delayed && active_targets[index].is_finite() {
               active_targets[index]
             } else {
@@ -1004,7 +1004,7 @@ impl NativeGroupSession {
           }
           let mut canceled_ids = Vec::new();
           for (live_id, (live_column, live_quantity, _live_scale, _live_row)) in queued.iter() {
-            if (delayed && members.contains(live_column)) || (!delayed && !kept_columns[*live_column]) {
+            if (!delayed && !kept_columns[*live_column]) || (delayed && (members.contains(live_column) || positions[*live_column].abs() > 1e-12)) {
               cancels.push((row, *live_id, *live_column, *live_quantity));
               canceled_ids.push(*live_id);
             }
