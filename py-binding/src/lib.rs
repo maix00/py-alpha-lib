@@ -1176,35 +1176,50 @@ impl NativeGroupSession {
             }
             continue;
           }
-          let notional = delta * price;
-          let effective_fee_rate = if self.fee_rates.is_empty() {
-            fee_rate
+          let prior = positions[index];
+          let mut parts: Vec<(u64, f64, f64)> = Vec::new();
+          if self.threshold_mode >= 0 && prior.abs() > 1e-12 && prior * delta < 0.0 {
+            let close_delta = -prior;
+            let open_delta = delta - close_delta;
+            order_id += 1;
+            let open_key = order_id;
+            events.push((row, 1, open_key, index));
+            parts.push((order_key, close_delta, close_delta));
+            if open_delta.abs() > 1e-12 { parts.push((open_key, open_delta, open_delta)); }
           } else {
-            let (open_rate, close_rate) = self.fee_rates[index];
-            if positions[index] * delta < 0.0 { close_rate } else { open_rate }
-          };
-          let fee = notional.abs() * effective_fee_rate;
-          if self.margin_ratio < 1.0 {
-            let realized = update_native_lots(&mut lots[index], delta, price, self.cost_method);
-            let margin_before = margins[index];
-            let new_position = positions[index] + delta;
-            let margin_after = new_position.abs() * price * self.margin_ratio;
-            cash += margin_before - margin_after + realized - fee;
-            margins[index] = margin_after;
-            positions[index] = new_position;
-            marks[index] = price;
-          } else {
-            cash -= notional + fee;
-            positions[index] += delta;
+            parts.push((order_key, intent_delta, delta));
           }
-          let filled_order_id = order_key;
-          if row < rows.saturating_sub(1) && delta.abs() + 1e-12 < intent_delta.abs() {
-            cancels.push((row, filled_order_id, index, intent_delta - delta));
+          for (part_order_id, part_intent, part_delta) in parts {
+            if part_delta.abs() <= 1e-12 { continue; }
+            let notional = part_delta * price;
+            let effective_fee_rate = if self.fee_rates.is_empty() {
+              fee_rate
+            } else {
+              let (open_rate, close_rate) = self.fee_rates[index];
+              if positions[index] * part_delta < 0.0 { close_rate } else { open_rate }
+            };
+            let fee = notional.abs() * effective_fee_rate;
+            if self.margin_ratio < 1.0 {
+              let realized = update_native_lots(&mut lots[index], part_delta, price, self.cost_method);
+              let margin_before = margins[index];
+              let new_position = positions[index] + part_delta;
+              let margin_after = new_position.abs() * price * self.margin_ratio;
+              cash += margin_before - margin_after + realized - fee;
+              margins[index] = margin_after;
+              positions[index] = new_position;
+              marks[index] = price;
+            } else {
+              cash -= notional + fee;
+              positions[index] += part_delta;
+            }
+            if row < rows.saturating_sub(1) && part_delta.abs() + 1e-12 < part_intent.abs() {
+              cancels.push((row, part_order_id, index, part_intent - part_delta));
+            }
+            attempts.push((part_order_id, row, 1));
+            orders.push((part_order_id, index, part_intent, fee, 1));
+            audits.push((row, part_order_id, part_delta, price, fee));
+            trades.push((row, index, part_delta, price, fee, cash));
           }
-          attempts.push((filled_order_id, row, 1));
-          orders.push((filled_order_id, index, intent_delta, fee, 1));
-          audits.push((row, filled_order_id, delta, price, fee));
-          trades.push((row, index, delta, price, fee, cash));
         }
       }
       if self.margin_ratio < 1.0 {
