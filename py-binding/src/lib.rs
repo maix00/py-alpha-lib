@@ -467,6 +467,64 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct CashConstraintKernel;
+
+#[pymethods]
+impl CashConstraintKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn basic_constraint(
+    &self, available: f64, prior: Vec<f64>, order_quantities: Vec<f64>,
+    prices: Vec<f64>, multipliers: Vec<f64>,
+  ) -> PyResult<(f64, f64, f64, Vec<f64>, Vec<f64>, Vec<bool>)> {
+    let count = prior.len();
+    if order_quantities.len() != count || prices.len() != count || multipliers.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("cash constraint length mismatch"));
+    }
+    let mut reducing = vec![0.0; count];
+    let mut increasing = vec![0.0; count];
+    for index in 0..count {
+      let order_quantity = order_quantities[index];
+      if order_quantity.abs() <= 1e-12 { continue; }
+      let prior_quantity = prior[index];
+      if prior_quantity.abs() <= 1e-12 || prior_quantity * order_quantity > 0.0 {
+        increasing[index] = order_quantity;
+      } else {
+        let close_abs = prior_quantity.abs().min(order_quantity.abs());
+        let sign = if order_quantity > 0.0 { 1.0 } else { -1.0 };
+        reducing[index] = sign * close_abs;
+        increasing[index] = order_quantity - reducing[index];
+      }
+    }
+    let mut release = 0.0;
+    let mut required = 0.0;
+    let mut constrained = vec![false; count];
+    for index in 0..count {
+      let price_multiplier = prices[index] * multipliers[index];
+      release += -reducing[index] * price_multiplier;
+      let delta = -increasing[index] * price_multiplier;
+      if delta < -1e-12 {
+        required += -delta;
+        constrained[index] = true;
+      }
+    }
+    let capacity = (available + release).max(0.0);
+    let scale = if required <= capacity + 1e-9 {
+      1.0
+    } else if required <= 0.0 {
+      0.0
+    } else {
+      capacity / required
+    };
+    if scale >= 1.0 {
+      constrained.iter_mut().for_each(|value| *value = false);
+    }
+    Ok((release, required, scale, reducing, increasing, constrained))
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct OrderConstructionKernel;
 
 #[pymethods]
@@ -1200,6 +1258,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<TargetAllocator>()?;
   m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<OrderConstructionKernel>()?;
+  m.add_class::<CashConstraintKernel>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
