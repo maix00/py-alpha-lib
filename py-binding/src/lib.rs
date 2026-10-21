@@ -881,12 +881,18 @@ pub struct NativeGroupSession {
   volume_rate: f64,
   execution_delay: usize,
   target_weights: Option<Py<numpy::PyArray2<f64>>>,
+  threshold_mode: i32,
+  entry_threshold: f64,
+  exit_threshold: f64,
+  quantile_entry: f64,
+  quantile_exit: f64,
+  side_mode: i32,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0, target_weights=None))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0, target_weights=None, threshold_mode=-1, entry_threshold=0.0, exit_threshold=0.0, quantile_entry=0.8, quantile_exit=0.6, side_mode=0))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
@@ -894,7 +900,9 @@ impl NativeGroupSession {
     target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
     fee_rates: Vec<(f64, f64)>, volume: Option<Py<numpy::PyArray2<f64>>>,
     volume_rate: f64, execution_delay: usize,
-    target_weights: Option<Py<numpy::PyArray2<f64>>>,
+    target_weights: Option<Py<numpy::PyArray2<f64>>>, threshold_mode: i32,
+    entry_threshold: f64, exit_threshold: f64, quantile_entry: f64,
+    quantile_exit: f64, side_mode: i32,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -905,7 +913,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay, target_weights })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay, target_weights, threshold_mode, entry_threshold, exit_threshold, quantile_entry, quantile_exit, side_mode })
   }
 
   fn run_event_driven(
@@ -942,6 +950,8 @@ impl NativeGroupSession {
     let mut queued: std::collections::HashMap<u64, (usize, f64, f64, usize)> = std::collections::HashMap::new();
     let mut cancels: Vec<(usize, u64, usize, f64)> = Vec::new();
     let mut active_targets = vec![f64::NAN; columns];
+    let mut previous_long = vec![false; columns];
+    let mut previous_short = vec![false; columns];
     let delayed = self.execution_delay > 0;
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
@@ -999,13 +1009,46 @@ impl NativeGroupSession {
           };
           let group_weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           let target_weights = target_view.as_ref().map(|value| value.as_array());
+          let mut computed_weights = vec![0.0f64; columns];
+          if self.threshold_mode >= 0 {
+            let mut values = vec![f64::NAN; columns];
+            for index in 0..columns {
+              let price = prices[[row, index]];
+              let value = factor[[signal_offset, index]];
+              if price > 0.0 && value.is_finite() { values[index] = value; }
+            }
+            let mut long_members = select_threshold_side(
+              &values, &previous_long, self.threshold_mode, self.entry_threshold,
+              self.exit_threshold, self.quantile_entry, self.quantile_exit, true,
+            );
+            let mut short_members = select_threshold_side(
+              &values, &previous_short, self.threshold_mode, self.entry_threshold,
+              self.exit_threshold, self.quantile_entry, self.quantile_exit, false,
+            );
+            previous_long = long_members.clone();
+            previous_short = short_members.clone();
+            if self.side_mode == 0 { short_members.iter_mut().for_each(|value| *value = false); }
+            if self.side_mode == 1 { long_members.iter_mut().for_each(|value| *value = false); }
+            let long_count = long_members.iter().filter(|value| **value).count() as f64;
+            let short_count = short_members.iter().filter(|value| **value).count() as f64;
+            for index in 0..columns {
+              computed_weights[index] = if self.side_mode == 2 {
+                (if long_members[index] && long_count > 0.0 { 0.5 / long_count } else { 0.0 })
+                  - (if short_members[index] && short_count > 0.0 { 0.5 / short_count } else { 0.0 })
+              } else if self.side_mode == 1 {
+                if short_members[index] && short_count > 0.0 { -1.0 / short_count } else { 0.0 }
+              } else if long_members[index] && long_count > 0.0 { 1.0 / long_count } else { 0.0 };
+            }
+          }
           let mut deltas = vec![0.0f64; columns];
           let mut row_weight = vec![0.0f64; columns];
           for index in 0..columns {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-            let weight = if let Some(values) = &target_weights {
+            let weight = if self.threshold_mode >= 0 {
+              computed_weights[index]
+            } else if let Some(values) = &target_weights {
               values[[signal_offset, index]]
             } else if members.contains(&index) { group_weight } else { 0.0 };
             row_weight[index] = weight;
@@ -1459,6 +1502,24 @@ impl CashConstraintKernel {
     }
     Ok((release, required, scale, reducing, increasing, constrained))
   }
+}
+
+fn select_threshold_side(
+  values: &[f64], previous: &[bool], mode: i32,
+  entry: f64, exit: f64, quantile_entry: f64, quantile_exit: f64,
+  positive_side: bool,
+) -> Vec<bool> {
+  let entry_cutoff = if mode == 1 {
+    quantile_cutoff(values, quantile_entry, positive_side)
+  } else if positive_side { entry } else { -entry };
+  let exit_cutoff = if mode == 1 {
+    quantile_cutoff(values, quantile_exit, positive_side)
+  } else if positive_side { exit } else { -exit };
+  values.iter().enumerate().map(|(index, value)| {
+    let passes_entry = if positive_side { *value >= entry_cutoff } else { *value <= entry_cutoff };
+    let passes_exit = if positive_side { *value >= exit_cutoff } else { *value <= exit_cutoff };
+    passes_entry || (previous[index] && passes_exit)
+  }).collect()
 }
 
 #[pyclass(unsendable)]
