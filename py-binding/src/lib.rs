@@ -1083,7 +1083,22 @@ impl NativeGroupSession {
           let mut cash_capacity = 0.0;
           let mut cash_required = 0.0;
           let mut cash_scale = 1.0;
-          if self.enforce_cash {
+          if self.threshold_mode >= 0 {
+            let mut release = 0.0;
+            let mut required = 0.0;
+            for index in 0..columns {
+              let delta = deltas[index];
+              if delta < 0.0 { release += -delta * prices[[row, index]]; }
+              if delta > 0.0 { required += delta * prices[[row, index]]; }
+            }
+            cash_capacity = (cash + release).max(0.0);
+            cash_required = required;
+            cash_scale = if required > cash_capacity + 1e-9 { cash_capacity / required } else { 1.0 };
+            for index in 0..columns {
+              let delta = deltas[index];
+              planned.push((index, if delta > 0.0 { delta * cash_scale } else { delta }));
+            }
+          } else if self.enforce_cash {
             let mut release = 0.0;
             let mut required = 0.0;
             for index in 0..columns {
