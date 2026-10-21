@@ -429,6 +429,59 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct VectorBacktest {
+  rows: usize,
+  columns: usize,
+  prices: Vec<f64>,
+  targets: Vec<f64>,
+}
+
+#[pymethods]
+impl VectorBacktest {
+  #[new]
+  fn new(rows: usize, columns: usize, prices: Vec<f64>, targets: Vec<f64>) -> PyResult<Self> {
+    if prices.len() != rows * columns || targets.len() != rows * columns {
+      return Err(pyo3::exceptions::PyValueError::new_err("shape mismatch"));
+    }
+    Ok(Self { rows, columns, prices, targets })
+  }
+
+  fn run(&self, initial_cash: f64, fee_rate: f64, lot_sizes: Vec<f64>) -> Vec<f64> {
+    let mut positions = vec![0.0f64; self.columns];
+    let mut cash = initial_cash;
+    let mut equity = vec![initial_cash; self.rows];
+    for row in 1..self.rows {
+      let price_offset = row * self.columns;
+      let target_offset = (row - 1) * self.columns;
+      let mut current_equity = cash;
+      for column in 0..self.columns {
+        current_equity += positions[column] * self.prices[price_offset + column];
+      }
+      let mut fees = 0.0;
+      let mut cash_flow = 0.0;
+      for column in 0..self.columns {
+        let price = self.prices[price_offset + column];
+        if price <= 0.0 { continue; }
+        let lot = if lot_sizes[column] > 0.0 { lot_sizes[column] } else { 1.0 };
+        let target = self.targets[target_offset + column] * current_equity / price;
+        let target = (target / lot).floor() * lot;
+        let delta = target - positions[column];
+        cash_flow += delta * price;
+        fees += (delta * price).abs() * fee_rate;
+        positions[column] = target;
+      }
+      cash -= cash_flow + fees;
+      let mut value = cash;
+      for column in 0..self.columns {
+        value += positions[column] * self.prices[price_offset + column];
+      }
+      equity[row] = value;
+    }
+    equity
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct OrderCore {
   quantity: f64,
   filled: f64,
@@ -766,6 +819,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<MarketDataMatrix>()?;
   m.add_class::<LedgerAccount>()?;
   m.add_class::<OrderCore>()?;
+  m.add_class::<VectorBacktest>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
