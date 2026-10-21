@@ -501,6 +501,7 @@ impl NativeTraceBuilder {
     timestamps: Vec<String>, execution_timestamps: Vec<String>,
     products: Vec<String>, initial_cash: f64, base_currency: &str,
     custom: bool, intents: Vec<(u64, f64)>,
+    execution_delay: usize,
     pending: Vec<(u64, usize, f64)>,
     constraints: Vec<(usize, u64, usize, f64, f64, f64, f64, f64)>,
   ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
@@ -559,7 +560,7 @@ impl NativeTraceBuilder {
     for (order_id, column, delta, fee, _status) in &orders {
       let (execution_row, _price) = audit_by_order.get(order_id).copied().unwrap_or((1, 0.0));
       let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
-      let signal_row = execution_row.saturating_sub(1);
+      let signal_row = execution_row.saturating_sub(1 + execution_delay);
       let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
       let execution_text = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
       let product = products.get(*column).cloned().unwrap_or_default();
@@ -675,7 +676,7 @@ impl NativeTraceBuilder {
       }
       if let TracePlanKind::Constraint(index) = plan_kind {
         let (row, order_id, column, before, after, scale, available, required) = constraints[index];
-        let signal_row = row.saturating_sub(1).min(execution_timestamps.len().saturating_sub(1));
+        let signal_row = row.saturating_sub(1 + execution_delay).min(execution_timestamps.len().saturating_sub(1));
         let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
         let timestamp = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
         let product = products.get(column).cloned().unwrap_or_default();
