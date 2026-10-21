@@ -495,6 +495,83 @@ impl NativeGroupSession {
     Ok(Self { factor, prices, lot_sizes, split_count, group_index })
   }
 
+  fn run_event_driven(
+    &self, py: Python<'_>, initial_cash: f64, fee_rate: f64,
+  ) -> PyResult<(
+    Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>,
+    Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
+  )> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let factor_view = self.factor.bind(py).readonly();
+    let price_view = self.prices.bind(py).readonly();
+    let factor = factor_view.as_array();
+    let prices = price_view.as_array();
+    let (rows, columns) = factor.dim();
+    let mut positions = vec![0.0f64; columns];
+    let mut cash = initial_cash;
+    let mut equity = vec![initial_cash; rows];
+    let mut trades = Vec::new();
+    let mut orders = Vec::new();
+    let mut audits = Vec::new();
+    let mut order_id = 0u64;
+    let mut sequence = 0u64;
+    let mut queue: BinaryHeap<Reverse<(usize, i32, u64, usize)>> = BinaryHeap::new();
+    let mut pending_delta = vec![0.0f64; columns];
+    for row in 1..rows {
+      queue.push(Reverse((row, 0, sequence, 0)));
+      sequence += 1;
+      let signal_offset = row - 1;
+      while let Some(Reverse((event_row, kind, _seq, column))) = queue.peek().copied() {
+        if event_row != row { break; }
+        queue.pop();
+        if kind == 0 {
+          let mut ranked: Vec<usize> = (0..columns).collect();
+          ranked.sort_by(|&left, &right| {
+            factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
+              .unwrap_or(std::cmp::Ordering::Equal).then_with(|| left.cmp(&right))
+          });
+          let bucket_size = columns as f64 / self.split_count as f64;
+          let start = (self.group_index as f64 * bucket_size).round() as usize;
+          let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+          let members = &ranked[start..end.min(columns)];
+          let mut current_equity = cash;
+          for index in 0..columns { current_equity += positions[index] * prices[[row, index]]; }
+          let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+          for index in 0..columns {
+            let price = prices[[row, index]];
+            if price <= 0.0 { continue; }
+            let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
+            let target = if members.contains(&index) { weight * current_equity / price } else { 0.0 };
+            let target = (target / lot).floor() * lot;
+            let order_delta = target - positions[index];
+            if order_delta.abs() > 1e-12 {
+              pending_delta[index] = order_delta;
+              queue.push(Reverse((row, 1, sequence, index)));
+              sequence += 1;
+            }
+          }
+        } else {
+          let index = column;
+          let delta = pending_delta[index];
+          let price = prices[[row, index]];
+          let notional = delta * price;
+          let fee = notional.abs() * fee_rate;
+          cash -= notional + fee;
+          positions[index] += delta;
+          order_id += 1;
+          orders.push((order_id, index, delta, fee, 1));
+          audits.push((row, order_id, delta, price, fee));
+          trades.push((row, index, delta, price, fee, cash));
+        }
+      }
+      let mut value = cash;
+      for index in 0..columns { value += positions[index] * prices[[row, index]]; }
+      equity[row] = value;
+    }
+    Ok((equity, trades, orders, audits))
+  }
+
   fn run(
     &self, py: Python<'_>, initial_cash: f64, fee_rate: f64,
   ) -> PyResult<(
