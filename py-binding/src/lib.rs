@@ -466,6 +466,14 @@ impl MarginAccount {
   }
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum TracePlanKind {
+  Normal(usize, usize),
+  Pending(usize),
+  Constraint(usize),
+  Rounding,
+}
+
 #[derive(Clone)]
 struct TraceEntry {
   order_id: u64,
@@ -493,10 +501,14 @@ impl NativeTraceBuilder {
     timestamps: Vec<String>, execution_timestamps: Vec<String>,
     products: Vec<String>, initial_cash: f64, base_currency: &str,
     custom: bool, intents: Vec<(u64, f64)>,
+    pending: Vec<(u64, usize, f64)>,
+    constraints: Vec<(usize, u64, usize, f64, f64, f64, f64, f64)>,
   ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
     let mut audit_by_order = std::collections::HashMap::new();
+    let mut audit_rows = std::collections::BTreeSet::new();
     for (row, order_id, _delta, price, _fee) in audits {
       audit_by_order.insert(order_id, (row, price));
+      audit_rows.insert(row);
     }
     let mut positions: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
     let mut cash = initial_cash;
@@ -558,7 +570,7 @@ impl NativeTraceBuilder {
       });
     }
     let intent_by_order: std::collections::HashMap<u64, f64> = intents.into_iter().collect();
-    let mut plan: Vec<(String, i32, i64, usize, usize, usize)> = Vec::with_capacity(entries.len() * 6);
+    let mut plan: Vec<(String, i32, i64, usize, TracePlanKind)> = Vec::with_capacity(entries.len() * 6);
     let mut sequence = 0usize;
     for (index, entry) in entries.iter().enumerate() {
       for step in 0..6 {
@@ -570,23 +582,152 @@ impl NativeTraceBuilder {
           4 => (entry.execution_text.clone(), 5, sequence as i64),
           _ => (entry.execution_text.clone(), 6, entry.order_id as i64),
         };
-        plan.push((timestamp, rank, key, sequence, index, step));
+        plan.push((timestamp, rank, key, sequence, TracePlanKind::Normal(index, step)));
         sequence += 1;
+      }
+    }
+    for (index, (order_id, column, delta)) in pending.iter().enumerate() {
+      let timestamp = timestamps.last().cloned().unwrap_or_default();
+      plan.push((timestamp, 0, *order_id as i64, sequence, TracePlanKind::Pending(index)));
+      let _ = (column, delta);
+      sequence += 1;
+    }
+    for (index, constraint) in constraints.iter().enumerate() {
+      let (row, order_id, _column, _before, _after, _scale, _available, _required) = constraint;
+      let signal_row = row.saturating_sub(1).min(execution_timestamps.len().saturating_sub(1));
+      let timestamp = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
+      plan.push((timestamp, 4, *order_id as i64, sequence, TracePlanKind::Constraint(index)));
+      sequence += 1;
+    }
+    if custom {
+      for row in &audit_rows {
+        if *row < timestamps.len() {
+          plan.push((timestamps[*row].clone(), -1, -1, sequence, TracePlanKind::Rounding));
+          sequence += 1;
+        }
       }
     }
     plan.sort();
     let mut rows = Vec::with_capacity(plan.len());
-    for (_timestamp, _rank, _key, seq, entry_index, step) in plan {
+    for (_timestamp, _rank, _key, seq, plan_kind) in plan {
+      if let TracePlanKind::Pending(index) = plan_kind {
+        let (pending_id, column, delta) = pending[index];
+        let signal_text = timestamps.last().cloned().unwrap_or_default();
+        let product = products.get(column).cloned().unwrap_or_default();
+        let position = positions.get(&column).copied().unwrap_or(0.0);
+        let leg = if position * delta < 0.0 { "close" } else { "open" };
+        let order_text = format!("{alias}-{signal_text}-{pending_id}");
+        let group_id = format!("{alias}-{signal_text}-group-{pending_id}");
+        let dict = templates[0].bind(py).copy()?;
+        dict.set_item("order_id", &order_text)?;
+        dict.set_item("order_group_id", &group_id)?;
+        dict.set_item("parent_intent_id", format!("{group_id}:intent"))?;
+        dict.set_item("strategy_id", alias)?;
+        dict.set_item("timestamp", &signal_text)?;
+        dict.set_item("product", product)?;
+        dict.set_item("quantity", delta)?;
+        dict.set_item("intent_quantity", delta)?;
+        dict.set_item("requested_quantity", delta.abs())?;
+        dict.set_item("filled_quantity", 0.0)?;
+        dict.set_item("remaining_quantity", delta.abs())?;
+        dict.set_item("unfilled_quantity", delta.abs())?;
+        dict.set_item("status", "draft")?;
+        dict.set_item("leg_role", leg)?;
+        dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
+        dict.set_item("execution_effect", "mixed")?;
+        dict.set_item("effective_price", py.None())?;
+        dict.set_item("fee_cost", py.None())?;
+        let detail = pyo3::types::PyDict::new(py);
+        detail.set_item("group_policy", "sequential_close_then_open")?;
+        detail.set_item("child_order_ids", pyo3::types::PyTuple::new(py, [order_text.as_str()])?)?;
+        detail.set_item("paired_execution_policy", py.None())?;
+        dict.set_item("details", detail)?;
+        rows.push(dict.unbind());
+        continue;
+      }
+      if let TracePlanKind::Rounding = plan_kind {
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("order_id", "")?;
+        dict.set_item("order_group_id", "")?;
+        dict.set_item("parent_intent_id", "")?;
+        dict.set_item("strategy_id", alias)?;
+        dict.set_item("timestamp", _timestamp)?;
+        dict.set_item("step", "quantity_rounding")?;
+        dict.set_item("label", "按最小买入手数取整")?;
+        dict.set_item("product", py.None())?;
+        dict.set_item("quantity", py.None())?;
+        dict.set_item("intent_quantity", py.None())?;
+        dict.set_item("requested_quantity", py.None())?;
+        dict.set_item("filled_quantity", 0.0)?;
+        dict.set_item("remaining_quantity", py.None())?;
+        dict.set_item("unfilled_quantity", py.None())?;
+        dict.set_item("status", "draft")?;
+        dict.set_item("leg_role", "")?;
+        dict.set_item("offset", "")?;
+        dict.set_item("execution_effect", "mixed")?;
+        dict.set_item("revision", 0)?;
+        dict.set_item("effective_price", py.None())?;
+        dict.set_item("fee_cost", py.None())?;
+        dict.set_item("reject_reason", py.None())?;
+        dict.set_item("details", pyo3::types::PyDict::new(py))?;
+        rows.push(dict.unbind());
+        continue;
+      }
+      if let TracePlanKind::Constraint(index) = plan_kind {
+        let (row, order_id, column, before, after, scale, available, required) = constraints[index];
+        let signal_row = row.saturating_sub(1).min(execution_timestamps.len().saturating_sub(1));
+        let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
+        let timestamp = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
+        let product = products.get(column).cloned().unwrap_or_default();
+        let order_text = format!("{alias}-{signal_text}-{order_id}");
+        let group_id = format!("{alias}-{signal_text}-group-{order_id}");
+        let (price, _fee, _leg, _cash_before, _cash_after, _g, _p) = &order_info[&order_id];
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("order_id", &order_text)?;
+        dict.set_item("order_group_id", &group_id)?;
+        dict.set_item("parent_intent_id", format!("{group_id}:intent"))?;
+        dict.set_item("strategy_id", alias)?;
+        dict.set_item("timestamp", timestamp)?;
+        dict.set_item("step", "execution_cash_constraint")?;
+        dict.set_item("label", "成交增量保证金约束")?;
+        dict.set_item("product", product)?;
+        dict.set_item("quantity", after)?;
+        dict.set_item("intent_quantity", before)?;
+        dict.set_item("requested_quantity", before)?;
+        dict.set_item("filled_quantity", 0.0)?;
+        dict.set_item("remaining_quantity", before)?;
+        dict.set_item("unfilled_quantity", before)?;
+        dict.set_item("status", "accepted")?;
+        dict.set_item("leg_role", "open")?;
+        dict.set_item("offset", "open")?;
+        dict.set_item("execution_effect", "increase")?;
+        dict.set_item("revision", 0)?;
+        dict.set_item("effective_price", price)?;
+        dict.set_item("fee_cost", 0.0)?;
+        dict.set_item("reject_reason", py.None())?;
+        let detail = pyo3::types::PyDict::new(py);
+        detail.set_item("before_quantity", before)?;
+        detail.set_item("after_quantity", after)?;
+        detail.set_item("scale", scale)?;
+        detail.set_item("available_cash", available)?;
+        detail.set_item("required_cash", required)?;
+        dict.set_item("details", detail)?;
+        rows.push(dict.unbind());
+        continue;
+      }
+      let (entry_index, step) = match plan_kind {
+        TracePlanKind::Normal(index, step) => (index, step),
+        _ => unreachable!(),
+      };
       let entry = &entries[entry_index];
       let order_id = entry.order_id;
       let delta = entry.delta;
       let fee = entry.fee;
-      let (price, fee_value, leg, cash_before, cash_after, group_id, parent_id) =
-        order_info.get(&order_id).cloned().unwrap_or((
-          0.0, fee, "open", initial_cash, initial_cash,
-          format!("{alias}-{}-group-{order_id}", entry.signal_text),
-          format!("{alias}-{}-group-{order_id}:intent", entry.signal_text),
-        ));
+      let info = &order_info[&order_id];
+      let (price, fee_value, leg, cash_before, cash_after) =
+        (info.0, info.1, info.2, info.3, info.4);
+      let group_id = &info.5;
+      let parent_id = &info.6;
       let filled_quantity_value = delta.abs();
       let intent_quantity = intent_by_order.get(&order_id).copied().map(f64::abs).unwrap_or(filled_quantity_value);
       let sign = if delta < 0.0 { -1.0 } else { 1.0 };
