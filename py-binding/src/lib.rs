@@ -467,6 +467,57 @@ impl MarginAccount {
 }
 
 #[pyclass(unsendable)]
+pub struct OrderConstructionKernel;
+
+#[pymethods]
+impl OrderConstructionKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn close_buckets(
+    &self, close_quantity: f64, lot_quantities: Vec<f64>,
+    lot_today: Vec<i32>, lot_prices: Vec<f64>, method: i32,
+  ) -> PyResult<Vec<(i32, i32, f64)>> {
+    let count = lot_quantities.len();
+    if lot_today.len() != count || lot_prices.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("lot bucket length mismatch"));
+    }
+    if close_quantity <= 1e-12 { return Ok(Vec::new()); }
+    if count == 0 { return Ok(vec![(2, 3, close_quantity)]); }
+    let mut order: Vec<usize> = (0..count).collect();
+    if method == 1 { order.reverse(); }
+    else if method == 2 {
+      order.sort_by(|&left, &right| lot_prices[right].partial_cmp(&lot_prices[left]).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut buckets: Vec<(i32, i32, f64)> = Vec::new();
+    let mut remaining = close_quantity;
+    for index in order {
+      if remaining <= 1e-12 { break; }
+      let take = remaining.min(lot_quantities[index].abs());
+      let (offset, role) = match lot_today[index] {
+        1 => (3, 1),
+        0 => (4, 2),
+        _ => (2, 3),
+      };
+      if let Some(bucket) = buckets.iter_mut().find(|bucket| bucket.0 == offset && bucket.1 == role) {
+        bucket.2 += take;
+      } else {
+        buckets.push((offset, role, take));
+      }
+      remaining -= take;
+    }
+    if remaining > 1e-12 {
+      if let Some(bucket) = buckets.iter_mut().find(|bucket| bucket.0 == 2 && bucket.1 == 3) {
+        bucket.2 += remaining;
+      } else {
+        buckets.push((2, 3, remaining));
+      }
+    }
+    Ok(buckets)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct OrderLifecycleBatch {
   accepted: Vec<f64>,
   filled: Vec<f64>,
@@ -1148,6 +1199,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<FeeModel>()?;
   m.add_class::<TargetAllocator>()?;
   m.add_class::<OrderLifecycleBatch>()?;
+  m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
   m.add_class::<LotBook>()?;
