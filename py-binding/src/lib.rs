@@ -493,6 +493,64 @@ impl VectorBacktest {
 }
 
 #[pyclass(unsendable)]
+pub struct OrderAttemptRecord {
+  attempt_id: String,
+  order_id: String,
+  revision: i32,
+  timestamp: Py<PyAny>,
+  market_timestamp: Py<PyAny>,
+  order: Py<PyAny>,
+}
+
+#[pymethods]
+impl OrderAttemptRecord {
+  #[getter] fn attempt_id(&self) -> &str { &self.attempt_id }
+  #[getter] fn order_id(&self) -> &str { &self.order_id }
+  #[getter] fn revision(&self) -> i32 { self.revision }
+  #[getter] fn timestamp(&self, py: Python<'_>) -> Py<PyAny> { self.timestamp.clone_ref(py) }
+  #[getter] fn market_timestamp(&self, py: Python<'_>) -> Py<PyAny> { self.market_timestamp.clone_ref(py) }
+  #[getter] fn order(&self, py: Python<'_>) -> Py<PyAny> { self.order.clone_ref(py) }
+
+  fn to_audit_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("type", "OrderAttempt")?;
+    dict.set_item("attempt_id", &self.attempt_id)?;
+    dict.set_item("order_id", &self.order_id)?;
+    dict.set_item("revision", self.revision)?;
+    dict.set_item("timestamp", self.timestamp.clone_ref(py))?;
+    dict.set_item("market_timestamp", self.market_timestamp.clone_ref(py))?;
+    Ok(dict.into())
+  }
+}
+
+#[pyfunction]
+fn create_attempt_records(
+  py: Python<'_>, attempt_ids: Vec<String>, order_ids: Vec<String>,
+  revisions: Vec<i32>, timestamps: Vec<Py<PyAny>>,
+  market_timestamps: Vec<Py<PyAny>>, orders: Vec<Py<PyAny>>,
+) -> PyResult<Vec<Py<OrderAttemptRecord>>> {
+  let length = attempt_ids.len();
+  if order_ids.len() != length || revisions.len() != length
+    || timestamps.len() != length || market_timestamps.len() != length
+    || orders.len() != length
+  {
+    return Err(pyo3::exceptions::PyValueError::new_err("attempt batch length mismatch"));
+  }
+  let mut result = Vec::with_capacity(length);
+  for index in 0..length {
+    result.push(Py::new(py, OrderAttemptRecord {
+      attempt_id: attempt_ids[index].clone(),
+      order_id: order_ids[index].clone(),
+      revision: revisions[index],
+      timestamp: timestamps[index].clone_ref(py),
+      market_timestamp: market_timestamps[index].clone_ref(py),
+      order: orders[index].clone_ref(py),
+    })?);
+  }
+  Ok(result)
+}
+
+#[pyclass(unsendable)]
 pub struct OrderCore {
   quantity: f64,
   filled: f64,
@@ -830,6 +888,8 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<MarketDataMatrix>()?;
   m.add_class::<LedgerAccount>()?;
   m.add_class::<OrderCore>()?;
+  m.add_class::<OrderAttemptRecord>()?;
+  m.add_function(wrap_pyfunction!(create_attempt_records, m)?)?;
   m.add_class::<VectorBacktest>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
