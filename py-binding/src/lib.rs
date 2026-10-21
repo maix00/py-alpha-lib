@@ -918,18 +918,46 @@ impl NativeGroupSession {
     let mut order_id = 0u64;
     let mut sequence = 0u64;
     let mut queue: BinaryHeap<Reverse<(usize, i32, u64, u64)>> = BinaryHeap::new();
-    let mut queued: std::collections::HashMap<u64, (usize, f64)> = std::collections::HashMap::new();
+    let mut queued: std::collections::HashMap<u64, (usize, f64, f64, usize)> = std::collections::HashMap::new();
     let mut cancels: Vec<(usize, u64, usize, f64)> = Vec::new();
     let mut active_targets = vec![f64::NAN; columns];
     let delayed = self.execution_delay > 0;
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
     let mut events = Vec::new();
-    for row in (if delayed { 0 } else { 1 })..(if delayed { rows.saturating_sub(1) } else { rows }) {
-      events.push((row, 0, 0, 0));
-      queue.push(Reverse((row, 2, sequence, 0)));
-      sequence += 1;
+    for row in (if delayed { 0 } else { 1 })..rows {
+      if !delayed || row < rows.saturating_sub(1) {
+        events.push((row, 0, 0, 0));
+        queue.push(Reverse((row, 2, sequence, 0)));
+        sequence += 1;
+      }
       let signal_offset = if delayed { row } else { row - 1 };
+      if let Some(volume_values) = volume {
+        if row < volume_values.shape()[0] {
+          let mut required = 0.0;
+          let mut release = 0.0;
+          let mut buys: Vec<(u64, f64)> = Vec::new();
+          for (queued_id, (queued_column, queued_delta, _scale, queued_row)) in queued.iter() {
+            if *queued_row != row { continue; }
+            let price = prices[[row, *queued_column]];
+            if *queued_delta > 0.0 {
+              let capacity = (volume_values[[row, *queued_column]] * self.volume_rate).max(0.0);
+              let capped = queued_delta.abs().min(capacity);
+              required += capped * price;
+              buys.push((*queued_id, capped));
+            } else {
+              release += -queued_delta * price;
+            }
+          }
+          let available = (cash + release).max(0.0);
+          if required > available + 1e-9 && required > 0.0 {
+            let scale = available / required;
+            for (buy_id, _capped) in buys {
+              if let Some(entry) = queued.get_mut(&buy_id) { entry.2 = scale; }
+            }
+          }
+        }
+      }
       while let Some(Reverse((event_row, kind, _seq, payload))) = queue.peek().copied() {
         if event_row != row { break; }
         queue.pop();
@@ -960,7 +988,7 @@ impl NativeGroupSession {
             deltas[index] = target - positions[index];
           }
           let mut live_delta = vec![0.0f64; columns];
-          for (_live_id, (live_column, live_quantity)) in queued.iter() {
+          for (_live_id, (live_column, live_quantity, _live_scale, _live_row)) in queued.iter() {
             live_delta[*live_column] += *live_quantity;
           }
           let mut kept_columns = vec![false; columns];
@@ -975,7 +1003,7 @@ impl NativeGroupSession {
             if (target_absolute - projected).abs() <= 1e-12 { kept_columns[index] = true; }
           }
           let mut canceled_ids = Vec::new();
-          for (live_id, (live_column, live_quantity)) in queued.iter() {
+          for (live_id, (live_column, live_quantity, _live_scale, _live_row)) in queued.iter() {
             if (delayed && members.contains(live_column)) || (!delayed && !kept_columns[*live_column]) {
               cancels.push((row, *live_id, *live_column, *live_quantity));
               canceled_ids.push(*live_id);
@@ -1017,6 +1045,26 @@ impl NativeGroupSession {
             }
           }
           let execution_row = if delayed { row + 1 + self.execution_delay } else { row + self.execution_delay };
+          let mut execution_cash_scale = 1.0;
+          if let Some(volume_values) = volume {
+            if execution_row < rows {
+              let mut required = 0.0;
+              let mut release = 0.0;
+              for (index, order_delta) in &planned {
+                let price = prices[[execution_row, *index]];
+                if *order_delta > 0.0 {
+                  let capacity = (volume_values[[execution_row, *index]] * self.volume_rate).max(0.0);
+                  required += order_delta.abs().min(capacity) * price;
+                } else {
+                  release += -order_delta * price;
+                }
+              }
+              let available = (cash + release).max(0.0);
+              if required > available + 1e-9 && required > 0.0 {
+                execution_cash_scale = available / required;
+              }
+            }
+          }
           let mut signal_order_ids = vec![0u64; columns];
           for index in 0..columns {
             if deltas[index].abs() <= 1e-12 || kept_columns[index] { continue; }
@@ -1028,7 +1076,7 @@ impl NativeGroupSession {
           for (index, order_delta) in planned {
             if order_delta.abs() <= 1e-12 || signal_order_ids[index] == 0 { continue; }
             let queued_order_id = signal_order_ids[index];
-            queued.insert(queued_order_id, (index, order_delta));
+            queued.insert(queued_order_id, (index, order_delta, 1.0, execution_row));
             if execution_row < rows {
               if self.enforce_cash && deltas[index] > 0.0 && cash_scale < 1.0 {
                 constraints.push((execution_row, queued_order_id, index, deltas[index], order_delta, cash_scale, cash_capacity, cash_required));
@@ -1039,7 +1087,7 @@ impl NativeGroupSession {
           }
         } else {
           let order_key = payload;
-          let Some((index, intent_delta)) = queued.remove(&order_key) else { continue; };
+          let Some((index, intent_delta, fill_scale, _exec_row)) = queued.remove(&order_key) else { continue; };
           let mut delta = intent_delta;
           if let Some(volume_values) = volume {
             if row >= volume_values.shape()[0] { continue; }
@@ -1047,6 +1095,9 @@ impl NativeGroupSession {
             if delta.abs() > capacity {
               delta = delta.signum() * capacity.max(0.0);
             }
+          }
+          if delta > 0.0 && fill_scale < 1.0 {
+            delta *= fill_scale;
           }
           if delta.abs() <= 1e-12 { continue; }
           let price = prices[[row, index]];
