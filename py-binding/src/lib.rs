@@ -478,7 +478,8 @@ impl NativeTraceBuilder {
     &self, py: Python<'_>, alias: &str,
     orders: Vec<(u64, usize, f64, f64, i32)>,
     audits: Vec<(usize, u64, f64, f64, f64)>,
-    timestamps: Vec<String>, products: Vec<String>,
+    timestamps: Vec<String>, execution_timestamps: Vec<String>,
+    products: Vec<String>,
   ) -> PyResult<Vec<Py<pyo3::types::PyDict>>> {
     let mut audit_by_order = std::collections::HashMap::new();
     for (row, order_id, _delta, price, _fee) in audits {
@@ -512,10 +513,11 @@ impl NativeTraceBuilder {
       let execution_row = execution_row.min(timestamps.len().saturating_sub(1));
       let signal_row = execution_row.saturating_sub(1);
       let signal_text = timestamps.get(signal_row).cloned().unwrap_or_default();
-      let execution_text = timestamps.get(execution_row).cloned().unwrap_or_default();
+      let execution_text = execution_timestamps.get(signal_row).cloned().unwrap_or_default();
       let product = products.get(column).cloned().unwrap_or_default();
       let order_text = format!("{alias}-{signal_text}-{order_id}");
       let quantity = delta.abs();
+      let signed_quantity = delta;
       let effect = if delta > 0.0 { "increase" } else { "reduce" };
       for step in 0..6 {
         let (_step_name, _label, timestamp, status, filled, remaining, details) = match step {
@@ -531,8 +533,8 @@ impl NativeTraceBuilder {
         dict.set_item("strategy_id", alias)?;
         dict.set_item("timestamp", timestamp)?;
         dict.set_item("product", &product)?;
-        dict.set_item("quantity", quantity)?;
-        dict.set_item("intent_quantity", quantity)?;
+        dict.set_item("quantity", signed_quantity)?;
+        dict.set_item("intent_quantity", signed_quantity)?;
         dict.set_item("requested_quantity", quantity)?;
         dict.set_item("filled_quantity", filled)?;
         dict.set_item("remaining_quantity", remaining)?;
@@ -560,16 +562,17 @@ pub struct NativeGroupSession {
   split_count: i64,
   group_index: i64,
   enforce_cash: bool,
+  round_to_lot: bool,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
-    split_count: i64, group_index: i64, enforce_cash: bool,
+    split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -580,7 +583,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot })
   }
 
   fn run_event_driven(
@@ -637,7 +640,7 @@ impl NativeGroupSession {
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
             let target = if members.contains(&index) { weight * current_equity / prices[[row - 1, index]] } else { 0.0 };
-            let target = (target / lot).floor() * lot;
+            let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
             deltas[index] = target - positions[index];
           }
           let mut planned = Vec::new();
@@ -720,7 +723,7 @@ impl NativeGroupSession {
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
         let target = if members.contains(&index) { weight * current_equity / price } else { 0.0 };
-        let target = (target / lot).floor() * lot;
+        let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let order_delta = target - positions[index];
         if order_delta.abs() > 1e-12 {
           order_id += 1;
@@ -772,7 +775,7 @@ impl NativeGroupSession {
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
         let target = if members.contains(&column) { weight * current_equity / prices[[row - 1, column]] } else { 0.0 };
-        let target = (target / lot).floor() * lot;
+        let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
         let notional = delta * price;
