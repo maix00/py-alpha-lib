@@ -175,6 +175,52 @@ mod algo_impl {
 }
 
 #[pyclass(unsendable)]
+pub struct LotBook {
+  method: i32,
+  lots: Vec<(f64, f64, f64, i32)>,
+}
+
+#[pymethods]
+impl LotBook {
+  #[new]
+  fn new(method: i32) -> Self { Self { method, lots: Vec::new() } }
+
+  fn apply_fill(&mut self, quantity: f64, price: f64, multiplier: f64, is_today: i32, offset: i32) -> f64 {
+    let prior: f64 = self.lots.iter().map(|lot| lot.0).sum();
+    if prior == 0.0 || (prior > 0.0) == (quantity > 0.0) {
+      self.lots.push((quantity, price, multiplier, is_today));
+      return 0.0;
+    }
+    let close_abs = prior.abs().min(quantity.abs());
+    let mut remaining = close_abs;
+    let mut realized = 0.0;
+    let mut order: Vec<usize> = (0..self.lots.len()).collect();
+    if self.method == 1 {
+      order.reverse();
+    } else if self.method == 2 {
+      order.sort_by(|&left, &right| self.lots[right].1.partial_cmp(&self.lots[left].1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    for index in order {
+      if remaining <= 1e-12 { break; }
+      let today = self.lots[index].3;
+      if (offset == 1 && today != 1) || (offset == 2 && today != 0) { continue; }
+      let take = remaining.min(self.lots[index].0.abs());
+      realized += take * (price - self.lots[index].1) * self.lots[index].2;
+      self.lots[index].0 -= if self.lots[index].0 > 0.0 { take } else { -take };
+      remaining -= take;
+    }
+    self.lots.retain(|lot| lot.0.abs() > 1e-12);
+    let flip = quantity.abs() - close_abs;
+    if flip > 1e-12 {
+      self.lots.push((if quantity > 0.0 { flip } else { -flip }, price, multiplier, is_today));
+    }
+    if prior > 0.0 { realized } else { -realized }
+  }
+
+  fn quantity(&self) -> f64 { self.lots.iter().map(|lot| lot.0).sum() }
+}
+
+#[pyclass(unsendable)]
 pub struct LedgerState {
   accounts: std::collections::HashMap<String, LedgerAccount>,
   margins: std::collections::HashMap<String, MarginAccount>,
@@ -604,6 +650,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderCore>()?;
   m.add_class::<MarginAccount>()?;
   m.add_class::<LedgerState>()?;
+  m.add_class::<LotBook>()?;
   register_functions(m)?;
   Ok(())
 }
