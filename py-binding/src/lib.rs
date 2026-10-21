@@ -218,6 +218,8 @@ impl LotBook {
   }
 
   fn quantity(&self) -> f64 { self.lots.iter().map(|lot| lot.0).sum() }
+
+  fn lots_snapshot(&self) -> Vec<(f64, f64, f64, i32)> { self.lots.clone() }
 }
 
 #[pyclass(unsendable)]
@@ -299,6 +301,22 @@ impl LedgerState {
       account.cash -= quantity * price * multiplier;
     }
     realized
+  }
+
+  fn set_lots(&mut self, ledger_id: &str, product: &str, method: i32, lots: Vec<(f64, f64, f64, i32)>) {
+    if !self.lots.contains_key(ledger_id) {
+      self.lots.insert(ledger_id.to_string(), std::collections::HashMap::new());
+    }
+    let book = self.lots.get_mut(ledger_id).unwrap()
+      .entry(product.to_string()).or_insert_with(|| LotBook::new(method));
+    book.lots = lots;
+  }
+
+  fn lots(&self, ledger_id: &str, product: &str) -> Vec<(f64, f64, f64, i32)> {
+    self.lots.get(ledger_id)
+      .and_then(|books| books.get(product))
+      .map(|book| book.lots_snapshot())
+      .unwrap_or_default()
   }
 
   fn cash(&self, ledger_id: &str) -> f64 {
