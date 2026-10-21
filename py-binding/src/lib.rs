@@ -668,6 +668,7 @@ impl NativeGroupSession {
     Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
     Vec<(u64, usize, i32)>, Vec<(u64, usize, f64)>,
     Vec<(usize, u64, usize, f64, f64, f64, f64, f64)>,
+    Vec<(usize, u8, u64, usize)>,
   )> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -689,7 +690,9 @@ impl NativeGroupSession {
     let mut pending_order_id = vec![0u64; columns];
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
+    let mut events = Vec::new();
     for row in 1..rows {
+      events.push((row, 0, 0, 0));
       queue.push(Reverse((row, 0, sequence, 0)));
       sequence += 1;
       let signal_offset = row - 1;
@@ -749,6 +752,7 @@ impl NativeGroupSession {
             order_id += 1;
             pending_order_id[index] = order_id;
             attempts.push((order_id, row, 0));
+            events.push((row, 1, order_id, index));
           }
           for (index, order_delta) in planned {
             if order_delta.abs() <= 1e-12 { continue; }
@@ -780,6 +784,7 @@ impl NativeGroupSession {
     }
     let mut pending = Vec::new();
     if rows > 0 {
+      events.push((rows - 1, 0, 0, 0));
       let signal_offset = rows - 1;
       let mut ranked: Vec<usize> = (0..columns).collect();
       ranked.sort_by(|&left, &right| {
@@ -807,7 +812,7 @@ impl NativeGroupSession {
         }
       }
     }
-    Ok((equity, trades, orders, audits, attempts, pending, constraints))
+    Ok((equity, trades, orders, audits, attempts, pending, constraints, events))
   }
 
   fn run(
