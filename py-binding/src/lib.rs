@@ -920,14 +920,16 @@ impl NativeGroupSession {
     let mut queue: BinaryHeap<Reverse<(usize, i32, u64, u64)>> = BinaryHeap::new();
     let mut queued: std::collections::HashMap<u64, (usize, f64)> = std::collections::HashMap::new();
     let mut cancels: Vec<(usize, u64, usize, f64)> = Vec::new();
+    let mut active_targets = vec![f64::NAN; columns];
+    let delayed = self.execution_delay > 0;
     let mut attempts = Vec::new();
     let mut constraints = Vec::new();
     let mut events = Vec::new();
-    for row in 1..rows {
+    for row in (if delayed { 0 } else { 1 })..(if delayed { rows.saturating_sub(1) } else { rows }) {
       events.push((row, 0, 0, 0));
       queue.push(Reverse((row, 2, sequence, 0)));
       sequence += 1;
-      let signal_offset = row - 1;
+      let signal_offset = if delayed { row } else { row - 1 };
       while let Some(Reverse((event_row, kind, _seq, payload))) = queue.peek().copied() {
         if event_row != row { break; }
         queue.pop();
@@ -945,7 +947,7 @@ impl NativeGroupSession {
           if self.margin_ratio < 1.0 {
             for index in 0..columns { current_equity += margins[index]; }
           } else {
-            for index in 0..columns { current_equity += positions[index] * prices[[row - 1, index]]; }
+            for index in 0..columns { current_equity += positions[index] * prices[[if delayed { row } else { row - 1 }, index]]; }
           }
           let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
           let mut deltas = vec![0.0f64; columns];
@@ -953,7 +955,7 @@ impl NativeGroupSession {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-            let target = if members.contains(&index) { weight * current_equity * self.target_scale / prices[[row - 1, index]] } else { 0.0 };
+            let target = if members.contains(&index) { weight * current_equity * self.target_scale / prices[[if delayed { row } else { row - 1 }, index]] } else { 0.0 };
             let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
             deltas[index] = target - positions[index];
           }
@@ -963,14 +965,18 @@ impl NativeGroupSession {
           }
           let mut kept_columns = vec![false; columns];
           for index in 0..columns {
-            if live_delta[index].abs() <= 1e-12 { continue; }
-            let target_absolute = positions[index] + deltas[index];
+            if (delayed && !members.contains(&index)) || live_delta[index].abs() <= 1e-12 { continue; }
+            let target_absolute = if delayed && active_targets[index].is_finite() {
+              active_targets[index]
+            } else {
+              positions[index] + deltas[index]
+            };
             let projected = positions[index] + live_delta[index];
             if (target_absolute - projected).abs() <= 1e-12 { kept_columns[index] = true; }
           }
           let mut canceled_ids = Vec::new();
           for (live_id, (live_column, live_quantity)) in queued.iter() {
-            if !kept_columns[*live_column] {
+            if (delayed && members.contains(live_column)) || (!delayed && !kept_columns[*live_column]) {
               cancels.push((row, *live_id, *live_column, *live_quantity));
               canceled_ids.push(*live_id);
             }
@@ -1010,7 +1016,7 @@ impl NativeGroupSession {
               planned.push((index, deltas[index]));
             }
           }
-          let execution_row = row + self.execution_delay;
+          let execution_row = if delayed { row + 1 + self.execution_delay } else { row + self.execution_delay };
           let mut signal_order_ids = vec![0u64; columns];
           for index in 0..columns {
             if deltas[index].abs() <= 1e-12 || kept_columns[index] { continue; }
@@ -1036,6 +1042,7 @@ impl NativeGroupSession {
           let Some((index, intent_delta)) = queued.remove(&order_key) else { continue; };
           let mut delta = intent_delta;
           if let Some(volume_values) = volume {
+            if row >= volume_values.shape()[0] { continue; }
             let capacity = volume_values[[row, index]] * self.volume_rate;
             if delta.abs() > capacity {
               delta = delta.signum() * capacity.max(0.0);
@@ -1115,6 +1122,7 @@ impl NativeGroupSession {
         let price = prices[[signal_offset, index]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
+        if delayed && !members.contains(&index) { continue; }
         let target = if members.contains(&index) { weight * current_equity * self.target_scale / price } else { 0.0 };
         let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let order_delta = target - positions[index];
