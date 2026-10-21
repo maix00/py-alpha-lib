@@ -500,6 +500,7 @@ impl NativeGroupSession {
   ) -> PyResult<(
     Vec<f64>, Vec<(usize, usize, f64, f64, f64, f64)>,
     Vec<(u64, usize, f64, f64, i32)>, Vec<(usize, u64, f64, f64, f64)>,
+    Vec<(u64, usize, i32)>,
   )> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
@@ -518,6 +519,8 @@ impl NativeGroupSession {
     let mut sequence = 0u64;
     let mut queue: BinaryHeap<Reverse<(usize, i32, u64, usize)>> = BinaryHeap::new();
     let mut pending_delta = vec![0.0f64; columns];
+    let mut pending_order_id = vec![0u64; columns];
+    let mut attempts = Vec::new();
     for row in 1..rows {
       queue.push(Reverse((row, 0, sequence, 0)));
       sequence += 1;
@@ -546,7 +549,10 @@ impl NativeGroupSession {
             let target = (target / lot).floor() * lot;
             let order_delta = target - positions[index];
             if order_delta.abs() > 1e-12 {
+              order_id += 1;
+              pending_order_id[index] = order_id;
               pending_delta[index] = order_delta;
+              attempts.push((order_id, row, 0));
               queue.push(Reverse((row, 1, sequence, index)));
               sequence += 1;
             }
@@ -559,9 +565,10 @@ impl NativeGroupSession {
           let fee = notional.abs() * fee_rate;
           cash -= notional + fee;
           positions[index] += delta;
-          order_id += 1;
-          orders.push((order_id, index, delta, fee, 1));
-          audits.push((row, order_id, delta, price, fee));
+          let filled_order_id = pending_order_id[index];
+          attempts.push((filled_order_id, row, 1));
+          orders.push((filled_order_id, index, delta, fee, 1));
+          audits.push((row, filled_order_id, delta, price, fee));
           trades.push((row, index, delta, price, fee, cash));
         }
       }
@@ -569,7 +576,7 @@ impl NativeGroupSession {
       for index in 0..columns { value += positions[index] * prices[[row, index]]; }
       equity[row] = value;
     }
-    Ok((equity, trades, orders, audits))
+    Ok((equity, trades, orders, audits, attempts))
   }
 
   fn run(
