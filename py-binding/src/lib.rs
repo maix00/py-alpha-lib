@@ -719,7 +719,7 @@ impl NativeGroupSession {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-            let target = if members.contains(&index) { weight * current_equity / prices[[row - 1, index]] } else { 0.0 };
+            let target = if members.contains(&index) { weight * current_equity * self.target_scale / prices[[row - 1, index]] } else { 0.0 };
             let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
             deltas[index] = target - positions[index];
           }
@@ -856,7 +856,7 @@ impl NativeGroupSession {
         let price = prices[[row, column]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
-        let target = if members.contains(&column) { weight * current_equity / prices[[row - 1, column]] } else { 0.0 };
+        let target = if members.contains(&column) { weight * current_equity * self.target_scale / prices[[row - 1, column]] } else { 0.0 };
         let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
