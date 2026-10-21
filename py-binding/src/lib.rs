@@ -1004,7 +1004,7 @@ impl NativeGroupSession {
           }
           let mut canceled_ids = Vec::new();
           for (live_id, (live_column, live_quantity, _live_scale, _live_row)) in queued.iter() {
-            if (!delayed && !kept_columns[*live_column]) || (delayed && (members.contains(live_column) || positions[*live_column].abs() > 1e-12)) {
+            if !kept_columns[*live_column] && (!delayed || members.contains(live_column) || positions[*live_column].abs() > 1e-12) {
               cancels.push((row, *live_id, *live_column, *live_quantity));
               canceled_ids.push(*live_id);
             }
