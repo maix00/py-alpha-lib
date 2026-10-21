@@ -556,6 +556,14 @@ impl NativeTraceBuilder {
     fee_detail_template.set_item("mode", "zero")?;
     fee_detail_template.set_item("fixed_rate", 0.0)?;
     let empty_detail_template = pyo3::types::PyDict::new(py);
+    let construct_detail_template = pyo3::types::PyDict::new(py);
+    construct_detail_template.set_item("group_policy", "sequential_close_then_open")?;
+    construct_detail_template.set_item("paired_execution_policy", py.None())?;
+    let resolve_detail_template = pyo3::types::PyDict::new(py);
+    resolve_detail_template.set_item("basis", "open")?;
+    let slippage_detail_template = pyo3::types::PyDict::new(py);
+    slippage_detail_template.set_item("mode", "none")?;
+    slippage_detail_template.set_item("slippage_bps", 0.0)?;
     let mut entries = Vec::with_capacity(orders.len());
     for (order_id, column, delta, fee, _status) in &orders {
       let (execution_row, _price) = audit_by_order.get(order_id).copied().unwrap_or((1, 0.0));
@@ -768,23 +776,22 @@ impl NativeTraceBuilder {
       else { dict.set_item("effective_price", price)?; }
       if step < 3 { dict.set_item("fee_cost", py.None())?; }
       else { dict.set_item("fee_cost", fee)?; }
-      let detail_dict = if step == 3 {
-        fee_detail_template.copy()?
-      } else if step == 5 {
-        empty_detail_template.copy()?
-      } else {
-        pyo3::types::PyDict::new(py)
+      let detail_dict = match step {
+        0 => construct_detail_template.copy()?,
+        1 => resolve_detail_template.copy()?,
+        2 => slippage_detail_template.copy()?,
+        3 => fee_detail_template.copy()?,
+        5 => empty_detail_template.copy()?,
+        _ => pyo3::types::PyDict::new(py),
       };
       match step {
         0 => {
-          detail_dict.set_item("group_policy", "sequential_close_then_open")?;
           let children = pyo3::types::PyTuple::new(py, [entry.order_text.as_str()])?;
           detail_dict.set_item("child_order_ids", children)?;
-          detail_dict.set_item("paired_execution_policy", py.None())?;
         }
-        1 => { detail_dict.set_item("basis", "open")?; detail_dict.set_item("price", price)?; }
-        2 => { detail_dict.set_item("mode", "none")?; detail_dict.set_item("slippage_bps", 0.0)?; detail_dict.set_item("base_price", price)?; }
-        3 => { detail_dict.set_item("mode", "zero")?; detail_dict.set_item("fixed_rate", 0.0)?; }
+        1 => { detail_dict.set_item("price", price)?; }
+        2 => { detail_dict.set_item("base_price", price)?; }
+        3 => {}
         4 => {
           detail_dict.set_item("fill_id", format!("{}:fill:1", entry.order_text))?;
           detail_dict.set_item("ledger_id", format!("private:{alias}"))?;
@@ -817,25 +824,6 @@ fn fast_sum<I: IntoIterator<Item = f64>>(values: I) -> f64 {
     sum = next;
   }
   sum + compensation
-}
-
-fn exact_sum<I: IntoIterator<Item = f64>>(values: I) -> f64 {
-  let mut partials: Vec<f64> = Vec::new();
-  for value in values {
-    let mut x = value;
-    let mut index = 0usize;
-    for partial_index in 0..partials.len() {
-      let mut y = partials[partial_index];
-      if x.abs() < y.abs() { std::mem::swap(&mut x, &mut y); }
-      let hi = x + y;
-      let lo = y - (hi - x);
-      if lo != 0.0 { partials[index] = lo; index += 1; }
-      x = hi;
-    }
-    partials.truncate(index);
-    partials.push(x);
-  }
-  partials.into_iter().sum()
 }
 
 fn update_native_lots(lots: &mut Vec<(f64, f64)>, delta: f64, price: f64, method: i32) -> f64 {
