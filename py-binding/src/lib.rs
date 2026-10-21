@@ -1123,6 +1123,9 @@ impl NativeGroupSession {
             positions[index] += delta;
           }
           let filled_order_id = order_key;
+          if delta.abs() + 1e-12 < intent_delta.abs() {
+            cancels.push((row, filled_order_id, index, intent_delta - delta));
+          }
           attempts.push((filled_order_id, row, 1));
           orders.push((filled_order_id, index, intent_delta, fee, 1));
           audits.push((row, filled_order_id, delta, price, fee));
