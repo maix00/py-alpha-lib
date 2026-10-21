@@ -678,6 +678,21 @@ impl TargetAllocator {
     Ok(weights)
   }
 
+  fn rank_indices(
+    &self, values: Vec<f64>, names: Vec<String>, descending: bool,
+  ) -> PyResult<Vec<usize>> {
+    if names.len() != values.len() {
+      return Err(pyo3::exceptions::PyValueError::new_err("rank batch length mismatch"));
+    }
+    let mut indices: Vec<usize> = (0..values.len()).collect();
+    indices.sort_by(|&left, &right| {
+      let ordering = values[left].partial_cmp(&values[right]).unwrap_or(std::cmp::Ordering::Equal);
+      let ordering = if descending { ordering.reverse() } else { ordering };
+      ordering.then_with(|| names[left].cmp(&names[right]))
+    });
+    Ok(indices)
+  }
+
   fn screen_mask(
     &self, values: Vec<f64>, present: Vec<bool>, rule: i32,
     lower: f64, upper: f64,
