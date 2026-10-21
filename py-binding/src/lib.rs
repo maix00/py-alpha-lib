@@ -568,6 +568,25 @@ impl TargetAllocator {
     }
     Ok(weights)
   }
+
+  fn factor_weights(
+    &self, values: Vec<f64>, present: Vec<bool>, inverse: bool,
+  ) -> PyResult<Vec<f64>> {
+    let count = values.len();
+    if present.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("factor batch length mismatch"));
+    }
+    let mut raw = vec![0.0; count];
+    for index in 0..count {
+      let value = values[index];
+      if present[index] && value.is_finite() && value > 0.0 {
+        raw[index] = if inverse { 1.0 / value } else { value };
+      }
+    }
+    let total: f64 = raw.iter().sum();
+    if total <= 0.0 { return Ok(vec![0.0; count]); }
+    Ok(raw.into_iter().map(|value| value / total).collect())
+  }
 }
 
 #[pyclass(unsendable)]
