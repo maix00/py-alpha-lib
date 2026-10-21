@@ -880,12 +880,13 @@ pub struct NativeGroupSession {
   volume: Option<Py<numpy::PyArray2<f64>>>,
   volume_rate: f64,
   execution_delay: usize,
+  target_weights: Option<Py<numpy::PyArray2<f64>>>,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0, target_weights=None))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
@@ -893,6 +894,7 @@ impl NativeGroupSession {
     target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
     fee_rates: Vec<(f64, f64)>, volume: Option<Py<numpy::PyArray2<f64>>>,
     volume_rate: f64, execution_delay: usize,
+    target_weights: Option<Py<numpy::PyArray2<f64>>>,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -903,7 +905,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay, target_weights })
   }
 
   fn run_event_driven(
@@ -922,6 +924,7 @@ impl NativeGroupSession {
     let factor = factor_view.as_array();
     let prices = price_view.as_array();
     let volume_view = self.volume.as_ref().map(|value| value.bind(py).readonly());
+    let target_view = self.target_weights.as_ref().map(|value| value.bind(py).readonly());
     let volume = volume_view.as_ref().map(|value| value.as_array());
     let (rows, columns) = factor.dim();
     let mut positions = vec![0.0f64; columns];
@@ -994,13 +997,19 @@ impl NativeGroupSession {
           } else {
             cash + fast_sum((0..columns).map(|index| positions[index] * prices[[if delayed { row } else { row - 1 }, index]]))
           };
-          let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+          let group_weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+          let target_weights = target_view.as_ref().map(|value| value.as_array());
           let mut deltas = vec![0.0f64; columns];
+          let mut row_weight = vec![0.0f64; columns];
           for index in 0..columns {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-            let target = if members.contains(&index) { weight * current_equity * self.target_scale / prices[[if delayed { row } else { row - 1 }, index]] } else { 0.0 };
+            let weight = if let Some(values) = &target_weights {
+              values[[signal_offset, index]]
+            } else if members.contains(&index) { group_weight } else { 0.0 };
+            row_weight[index] = weight;
+            let target = weight * current_equity * self.target_scale / prices[[if delayed { row } else { row - 1 }, index]];
             let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
             deltas[index] = target - positions[index];
           }
@@ -1010,7 +1019,7 @@ impl NativeGroupSession {
           }
           let mut kept_columns = vec![false; columns];
           for index in 0..columns {
-            if (delayed && !members.contains(&index) && positions[index].abs() <= 1e-12) || live_delta[index].abs() <= 1e-12 { continue; }
+            if (delayed && row_weight[index].abs() <= 1e-12 && positions[index].abs() <= 1e-12) || live_delta[index].abs() <= 1e-12 { continue; }
             let target_absolute = if delayed && active_targets[index].is_finite() {
               active_targets[index]
             } else {
@@ -1021,7 +1030,7 @@ impl NativeGroupSession {
           }
           let mut canceled_ids = Vec::new();
           for (live_id, (live_column, live_quantity, _live_scale, _live_row)) in queued.iter() {
-            if !kept_columns[*live_column] && (!delayed || members.contains(live_column) || positions[*live_column].abs() > 1e-12) {
+            if !kept_columns[*live_column] && (!delayed || row_weight[*live_column].abs() > 1e-12 || positions[*live_column].abs() > 1e-12) {
               cancels.push((row, *live_id, *live_column, *live_quantity));
               canceled_ids.push(*live_id);
             }
