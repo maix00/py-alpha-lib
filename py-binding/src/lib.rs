@@ -545,7 +545,7 @@ impl NativeGroupSession {
             let price = prices[[row, index]];
             if price <= 0.0 { continue; }
             let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-            let target = if members.contains(&index) { weight * current_equity / price } else { 0.0 };
+            let target = if members.contains(&index) { weight * current_equity / prices[[row - 1, index]] } else { 0.0 };
             let target = (target / lot).floor() * lot;
             let order_delta = target - positions[index];
             if order_delta.abs() > 1e-12 {
@@ -618,7 +618,7 @@ impl NativeGroupSession {
         let price = prices[[row, column]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
-        let target = if members.contains(&column) { weight * current_equity / price } else { 0.0 };
+        let target = if members.contains(&column) { weight * current_equity / prices[[row - 1, column]] } else { 0.0 };
         let target = (target / lot).floor() * lot;
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
@@ -692,7 +692,7 @@ impl NativeSession {
         let price = prices[[row, column]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
-        let target = targets[[row - 1, column]] * current_equity / price;
+        let target = targets[[row - 1, column]] * current_equity / prices[[row - 1, column]];
         let target = (target / lot).floor() * lot;
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
@@ -735,7 +735,7 @@ impl NativeSession {
         let price = prices[[row, column]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[column] > 0.0 { self.lot_sizes[column] } else { 1.0 };
-        let target = targets[[row - 1, column]] * current_equity / price;
+        let target = targets[[row - 1, column]] * current_equity / prices[[row - 1, column]];
         let target = (target / lot).floor() * lot;
         let delta = target - positions[column];
         if delta.abs() <= 1e-12 { continue; }
