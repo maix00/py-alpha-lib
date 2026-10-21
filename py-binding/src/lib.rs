@@ -854,18 +854,21 @@ pub struct NativeGroupSession {
   cost_method: i32,
   daily_mtm: bool,
   fee_rates: Vec<(f64, f64)>,
+  volume: Option<Py<numpy::PyArray2<f64>>>,
+  volume_rate: f64,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new()))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
     split_count: i64, group_index: i64, enforce_cash: bool, round_to_lot: bool,
     target_scale: f64, margin_ratio: f64, cost_method: i32, daily_mtm: bool,
-    fee_rates: Vec<(f64, f64)>,
+    fee_rates: Vec<(f64, f64)>, volume: Option<Py<numpy::PyArray2<f64>>>,
+    volume_rate: f64,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -876,7 +879,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate })
   }
 
   fn run_event_driven(
@@ -894,6 +897,8 @@ impl NativeGroupSession {
     let price_view = self.prices.bind(py).readonly();
     let factor = factor_view.as_array();
     let prices = price_view.as_array();
+    let volume_view = self.volume.as_ref().map(|value| value.bind(py).readonly());
+    let volume = volume_view.as_ref().map(|value| value.as_array());
     let (rows, columns) = factor.dim();
     let mut positions = vec![0.0f64; columns];
     let mut cash = initial_cash;
@@ -968,6 +973,13 @@ impl NativeGroupSession {
             for index in 0..columns {
               if deltas[index] > 0.0 { planned.push((index, deltas[index] * cash_scale)); }
             }
+          } else if volume.is_some() {
+            for index in 0..columns {
+              if deltas[index] < 0.0 { planned.push((index, deltas[index])); }
+            }
+            for index in 0..columns {
+              if deltas[index] > 0.0 { planned.push((index, deltas[index])); }
+            }
           } else {
             for index in 0..columns {
               planned.push((index, deltas[index]));
@@ -991,7 +1003,15 @@ impl NativeGroupSession {
           }
         } else {
           let index = column;
-          let delta = pending_delta[index];
+          let intent_delta = pending_delta[index];
+          let mut delta = intent_delta;
+          if let Some(volume_values) = volume {
+            let capacity = volume_values[[row, index]] * self.volume_rate;
+            if delta.abs() > capacity {
+              delta = delta.signum() * capacity.max(0.0);
+            }
+          }
+          if delta.abs() <= 1e-12 { continue; }
           let price = prices[[row, index]];
           let notional = delta * price;
           let effective_fee_rate = if self.fee_rates.is_empty() {
@@ -1016,7 +1036,7 @@ impl NativeGroupSession {
           }
           let filled_order_id = pending_order_id[index];
           attempts.push((filled_order_id, row, 1));
-          orders.push((filled_order_id, index, delta, fee, 1));
+          orders.push((filled_order_id, index, intent_delta, fee, 1));
           audits.push((row, filled_order_id, delta, price, fee));
           trades.push((row, index, delta, price, fee, cash));
         }
