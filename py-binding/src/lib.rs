@@ -1240,6 +1240,36 @@ impl NativeGroupSession {
       let start = (self.group_index as f64 * bucket_size).round() as usize;
       let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
       let members = &ranked[start..end.min(columns)];
+      let group_weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+      let mut final_weights = vec![0.0f64; columns];
+      if self.threshold_mode >= 0 {
+        let mut values = vec![f64::NAN; columns];
+        for index in 0..columns {
+          let price = prices[[signal_offset, index]];
+          let value = factor[[signal_offset, index]];
+          if price > 0.0 && value.is_finite() { values[index] = value; }
+        }
+        let mut long_members = select_threshold_side(
+          &values, &previous_long, self.threshold_mode, self.entry_threshold,
+          self.exit_threshold, self.quantile_entry, self.quantile_exit, true,
+        );
+        let mut short_members = select_threshold_side(
+          &values, &previous_short, self.threshold_mode, self.entry_threshold,
+          self.exit_threshold, self.quantile_entry, self.quantile_exit, false,
+        );
+        if self.side_mode == 0 { short_members.iter_mut().for_each(|value| *value = false); }
+        if self.side_mode == 1 { long_members.iter_mut().for_each(|value| *value = false); }
+        let long_count = long_members.iter().filter(|value| **value).count() as f64;
+        let short_count = short_members.iter().filter(|value| **value).count() as f64;
+        for index in 0..columns {
+          final_weights[index] = if self.side_mode == 2 {
+            (if long_members[index] && long_count > 0.0 { 0.5 / long_count } else { 0.0 })
+              - (if short_members[index] && short_count > 0.0 { 0.5 / short_count } else { 0.0 })
+          } else if self.side_mode == 1 {
+            if short_members[index] && short_count > 0.0 { -1.0 / short_count } else { 0.0 }
+          } else if long_members[index] && long_count > 0.0 { 1.0 / long_count } else { 0.0 };
+        }
+      }
       let current_equity = if self.margin_ratio < 1.0 {
         cash + fast_sum(margins.iter().copied())
       } else {
@@ -1250,8 +1280,8 @@ impl NativeGroupSession {
         let price = prices[[signal_offset, index]];
         if price <= 0.0 { continue; }
         let lot = if self.lot_sizes[index] > 0.0 { self.lot_sizes[index] } else { 1.0 };
-        if delayed && !members.contains(&index) { continue; }
-        let target = if members.contains(&index) { weight * current_equity * self.target_scale / price } else { 0.0 };
+        let weight = if self.threshold_mode >= 0 { final_weights[index] } else if members.contains(&index) { group_weight } else { 0.0 };
+        let target = weight * current_equity * self.target_scale / price;
         let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
         let order_delta = target - positions[index];
         if order_delta.abs() > 1e-12 {
