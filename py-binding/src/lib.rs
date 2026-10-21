@@ -1583,6 +1583,42 @@ fn select_threshold_side(
 }
 
 #[pyclass(unsendable)]
+pub struct LongShortKernel;
+
+#[pymethods]
+impl LongShortKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn compose(&self, long_weights: Vec<f64>, short_weights: Vec<f64>, gross: f64) -> PyResult<Vec<f64>> {
+    let count = long_weights.len();
+    if short_weights.len() != count {
+      return Err(pyo3::exceptions::PyValueError::new_err("long-short length mismatch"));
+    }
+    let mut long_total = 0.0f64;
+    let mut short_total = 0.0f64;
+    for index in 0..count {
+      if long_weights[index].abs() > 1e-12 && short_weights[index].abs() > 1e-12 { continue; }
+      long_total += long_weights[index].abs();
+      short_total += short_weights[index].abs();
+    }
+    if long_total <= 0.0 || short_total <= 0.0 {
+      return Ok(vec![0.0; count]);
+    }
+    let half = gross.abs() * 0.5;
+    Ok((0..count).map(|index| {
+      let long = if long_weights[index].abs() > 1e-12 && short_weights[index].abs() <= 1e-12 {
+        half * long_weights[index].abs() / long_total
+      } else { 0.0 };
+      let short = if short_weights[index].abs() > 1e-12 && long_weights[index].abs() <= 1e-12 {
+        half * short_weights[index].abs() / short_total
+      } else { 0.0 };
+      long - short
+    }).collect())
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct ThresholdKernel;
 
 #[pymethods]
@@ -2401,6 +2437,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<ThresholdKernel>()?;
+  m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
   m.add_class::<NativeGroupSession>()?;
