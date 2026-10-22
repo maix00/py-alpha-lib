@@ -1681,6 +1681,43 @@ impl TermStructureFactorKernel {
     }
     Ok(output)
   }
+
+  fn carry_matrix_paths(
+    &self,
+    prices: Vec<Vec<f64>>,
+    near_paths: Vec<Vec<usize>>,
+    far_paths: Vec<Vec<usize>>,
+    lookback: usize,
+  ) -> PyResult<Vec<Vec<f64>>> {
+    let rows = prices.len();
+    let product_count = near_paths.len().min(far_paths.len());
+    let lookback = lookback.max(1);
+    let mut output = vec![vec![f64::NAN; product_count]; rows];
+    for product in 0..product_count {
+      let near_path = &near_paths[product];
+      let far_path = &far_paths[product];
+      if near_path.len() < rows || far_path.len() < rows { continue; }
+      for row in 0..rows {
+        if row + 1 < lookback { continue; }
+        let mut total = 0.0f64;
+        let mut valid = true;
+        for offset in 0..lookback {
+          let index = row - offset;
+          let near = near_path[index];
+          let far = far_path[index];
+          let near_price = prices[index][near];
+          let far_price = prices[index][far];
+          if !near_price.is_finite() || !far_price.is_finite() || far_price == 0.0 {
+            valid = false;
+            break;
+          }
+          total += near_price / far_price - 1.0;
+        }
+        if valid { output[row][product] = total / lookback as f64; }
+      }
+    }
+    Ok(output)
+  }
 }
 
 #[pyclass(unsendable)]
