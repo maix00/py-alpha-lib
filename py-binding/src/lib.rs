@@ -1621,6 +1621,31 @@ impl LongShortKernel {
 }
 
 #[pyclass(unsendable)]
+pub struct TermCarryKernel;
+
+#[pymethods]
+impl TermCarryKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn next_direction(&self, signal: f64, previous: i32, entry: f64, exit_at: f64) -> i32 {
+    if !signal.is_finite() { return previous; }
+    let entry = entry.abs();
+    let exit_at = exit_at.abs();
+    if signal.abs() <= exit_at { 0 }
+    else if signal >= entry { 1 }
+    else if signal <= -entry { -1 }
+    else { previous }
+  }
+
+  fn leg_weights(&self, direction: i32, gross: f64, product_count: usize) -> PyResult<Vec<f64>> {
+    if product_count == 0 { return Ok(vec![0.0, 0.0]); }
+    let leg_weight = gross.abs() / (2.0 * product_count as f64);
+    Ok(vec![direction as f64 * leg_weight, -(direction as f64) * leg_weight])
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct GroupKernel;
 
 #[pymethods]
@@ -2474,6 +2499,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<ThresholdKernel>()?;
   m.add_class::<GroupKernel>()?;
+  m.add_class::<TermCarryKernel>()?;
   m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
