@@ -1641,6 +1641,38 @@ impl LongShortKernel {
 }
 
 #[pyclass(unsendable)]
+pub struct LifecycleKernel;
+
+#[pymethods]
+impl LifecycleKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn parse_offset_seconds(&self, value: &str) -> PyResult<f64> {
+    let text = value.trim();
+    if text.is_empty() { return Ok(0.0); }
+    let mut split = text.find(|character: char| !character.is_ascii_digit() && character != '.').unwrap_or(text.len());
+    if split == 0 { return Err(pyo3::exceptions::PyValueError::new_err("invalid time offset")); }
+    let number: f64 = text[..split].parse().map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid time offset"))?;
+    let unit = text[split..].trim().to_ascii_lowercase();
+    split = 0;
+    let factor = match unit.as_str() {
+      "d" | "day" | "days" => 86_400.0,
+      "h" | "hour" | "hours" => 3_600.0,
+      "min" | "minute" | "minutes" => 60.0,
+      "s" | "sec" | "second" | "seconds" => 1.0,
+      "ms" => 0.001,
+      "us" => 0.000001,
+      "" => 86_400.0,
+      _ => return Err(pyo3::exceptions::PyValueError::new_err("invalid time offset")),
+    };
+    let seconds = number * factor;
+    if seconds < 0.0 { return Err(pyo3::exceptions::PyValueError::new_err("invalid time offset")); }
+    Ok(seconds)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct TermCarryKernel;
 
 #[pymethods]
@@ -2520,6 +2552,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<ThresholdKernel>()?;
   m.add_class::<GroupKernel>()?;
   m.add_class::<TermCarryKernel>()?;
+  m.add_class::<LifecycleKernel>()?;
   m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
