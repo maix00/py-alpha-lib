@@ -999,8 +999,8 @@ impl NativeGroupSession {
               .unwrap_or(std::cmp::Ordering::Equal).then_with(|| left.cmp(&right))
           });
           let bucket_size = columns as f64 / self.split_count as f64;
-          let start = (self.group_index as f64 * bucket_size).round() as usize;
-          let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+          let start = (self.group_index as f64 * bucket_size).round_ties_even() as usize;
+          let end = (((self.group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
           let members = &ranked[start..end.min(columns)];
           let current_equity = if self.margin_ratio < 1.0 {
             cash + fast_sum(margins.iter().copied())
@@ -1267,8 +1267,8 @@ impl NativeGroupSession {
           .unwrap_or(std::cmp::Ordering::Equal).then_with(|| left.cmp(&right))
       });
       let bucket_size = columns as f64 / self.split_count as f64;
-      let start = (self.group_index as f64 * bucket_size).round() as usize;
-      let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+      let start = (self.group_index as f64 * bucket_size).round_ties_even() as usize;
+      let end = (((self.group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
       let members = &ranked[start..end.min(columns)];
       let group_weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       let mut final_weights = vec![0.0f64; columns];
@@ -1351,8 +1351,8 @@ impl NativeGroupSession {
           .then_with(|| left.cmp(&right))
       });
       let bucket_size = columns as f64 / self.split_count as f64;
-      let start = (self.group_index as f64 * bucket_size).round() as usize;
-      let end = (((self.group_index + 1) as f64) * bucket_size).round() as usize;
+      let start = (self.group_index as f64 * bucket_size).round_ties_even() as usize;
+      let end = (((self.group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
       let members = &ranked[start..end.min(columns)];
       let mut current_equity = cash;
       for column in 0..columns {
@@ -1615,6 +1615,40 @@ impl LongShortKernel {
       } else { 0.0 };
       long - short
     }).collect())
+  }
+}
+
+#[pyclass(unsendable)]
+pub struct GroupKernel;
+
+#[pymethods]
+impl GroupKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn equal_group_weights(
+    &self, values: Vec<f64>, prices: Vec<f64>, split_count: i64, group_index: i64,
+  ) -> PyResult<Vec<f64>> {
+    let count = values.len();
+    if prices.len() != count || split_count <= 0 || group_index < 0 || group_index >= split_count {
+      return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
+    }
+    let mut ranked: Vec<usize> = (0..count).collect();
+    ranked.sort_by(|&left, &right| {
+      values[right].partial_cmp(&values[left])
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left.cmp(&right))
+    });
+    let bucket_size = count as f64 / split_count as f64;
+    let start = (group_index as f64 * bucket_size).round_ties_even() as usize;
+    let end = (((group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
+    let members = &ranked[start..end.min(count)];
+    let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
+    let mut weights = vec![0.0f64; count];
+    for index in 0..count {
+      if prices[index] > 0.0 && members.contains(&index) { weights[index] = weight; }
+    }
+    Ok(weights)
   }
 }
 
@@ -2437,6 +2471,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<ThresholdKernel>()?;
+  m.add_class::<GroupKernel>()?;
   m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
