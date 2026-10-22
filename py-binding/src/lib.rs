@@ -1272,7 +1272,9 @@ impl NativeGroupSession {
       let members = &ranked[start..end.min(columns)];
       let group_weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
       let mut final_weights = vec![0.0f64; columns];
-      if self.threshold_mode >= 0 {
+      if let Some(values) = target_view.as_ref().map(|value| value.as_array()) {
+        for index in 0..columns { final_weights[index] = values[[rows - 1, index]]; }
+      } else if self.threshold_mode >= 0 {
         let mut values = vec![f64::NAN; columns];
         for index in 0..columns {
           let price = prices[[signal_offset, index]];
