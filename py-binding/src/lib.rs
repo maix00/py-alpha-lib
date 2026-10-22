@@ -1641,6 +1641,49 @@ impl LongShortKernel {
 }
 
 #[pyclass(unsendable)]
+pub struct TermStructureFactorKernel;
+
+#[pymethods]
+impl TermStructureFactorKernel {
+  #[new]
+  fn new() -> Self { Self }
+
+  fn carry_matrix(
+    &self,
+    prices: Vec<Vec<f64>>,
+    near_indices: Vec<usize>,
+    far_indices: Vec<usize>,
+    lookback: usize,
+  ) -> PyResult<Vec<Vec<f64>>> {
+    let rows = prices.len();
+    let product_count = near_indices.len().min(far_indices.len());
+    let lookback = lookback.max(1);
+    let mut output = vec![vec![f64::NAN; product_count]; rows];
+    for row in 0..rows {
+      if row + 1 < lookback { continue; }
+      for product in 0..product_count {
+        let near = near_indices[product];
+        let far = far_indices[product];
+        let mut total = 0.0f64;
+        let mut valid = true;
+        for offset in 0..lookback {
+          let index = row - offset;
+          let near_price = prices[index][near];
+          let far_price = prices[index][far];
+          if !near_price.is_finite() || !far_price.is_finite() || far_price == 0.0 {
+            valid = false;
+            break;
+          }
+          total += near_price / far_price - 1.0;
+        }
+        if valid { output[row][product] = total / lookback as f64; }
+      }
+    }
+    Ok(output)
+  }
+}
+
+#[pyclass(unsendable)]
 pub struct LifecycleKernel;
 
 #[pymethods]
@@ -2553,6 +2596,7 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<GroupKernel>()?;
   m.add_class::<TermCarryKernel>()?;
   m.add_class::<LifecycleKernel>()?;
+  m.add_class::<TermStructureFactorKernel>()?;
   m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
