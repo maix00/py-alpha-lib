@@ -474,8 +474,8 @@ enum TracePlanKind {
   Rounding,
 }
 
-#[derive(Clone)]
 struct TraceEntry {
+  base: Py<pyo3::types::PyDict>,
   order_id: u64,
   column: usize,
   delta: f64,
@@ -555,7 +555,9 @@ impl NativeTraceBuilder {
     let fee_detail_template = pyo3::types::PyDict::new(py);
     fee_detail_template.set_item("mode", "zero")?;
     fee_detail_template.set_item("fixed_rate", 0.0)?;
+    let fee_detail_template = fee_detail_template.unbind();
     let empty_detail_template = pyo3::types::PyDict::new(py);
+    let empty_detail_template = empty_detail_template.unbind();
     let construct_detail_template = pyo3::types::PyDict::new(py);
     construct_detail_template.set_item("group_policy", "sequential_close_then_open")?;
     construct_detail_template.set_item("paired_execution_policy", py.None())?;
@@ -564,6 +566,7 @@ impl NativeTraceBuilder {
     let slippage_detail_template = pyo3::types::PyDict::new(py);
     slippage_detail_template.set_item("mode", "none")?;
     slippage_detail_template.set_item("slippage_bps", 0.0)?;
+    let ledger_id_text = format!("private:{alias}");
     let mut entries = Vec::with_capacity(orders.len());
     for (order_id, column, delta, fee, _status) in &orders {
       let (execution_row, _price) = audit_by_order.get(order_id).copied().unwrap_or((1, 0.0));
@@ -577,7 +580,19 @@ impl NativeTraceBuilder {
       };
       let product = products.get(*column).cloned().unwrap_or_default();
       let order_text = format!("{alias}-{signal_text}-{order_id}");
+      let info = &order_info[order_id];
+      let base = pyo3::types::PyDict::new(py);
+      base.set_item("order_id", &order_text)?;
+      base.set_item("order_group_id", &info.5)?;
+      base.set_item("parent_intent_id", &info.6)?;
+      base.set_item("strategy_id", alias)?;
+      base.set_item("product", &product)?;
+      base.set_item("leg_role", info.2)?;
+      base.set_item("offset", if info.2 == "close" { "close" } else { "open" })?;
+      base.set_item("revision", 0)?;
+      base.set_item("reject_reason", py.None())?;
       entries.push(TraceEntry {
+        base: base.unbind(),
         order_id: *order_id, column: *column, delta: *delta, fee: *fee,
         signal_text, execution_text, product, order_text,
       });
@@ -752,13 +767,18 @@ impl NativeTraceBuilder {
         1 | 2 | 3 => ("accepted", 0.0, quantity),
         _ => ("filled", filled_quantity_value, 0.0),
       };
-      let dict = templates[step].bind(py).copy()?;
-      dict.set_item("order_id", &entry.order_text)?;
-      dict.set_item("order_group_id", &group_id)?;
-      dict.set_item("parent_intent_id", &parent_id)?;
-      dict.set_item("strategy_id", alias)?;
+      let dict = entry.base.bind(py).copy()?;
+      let (step_name, label) = match step {
+        0 => ("construct_order", "构造原子订单"),
+        1 => ("resolve_execution_price", "解析成交价"),
+        2 => ("slippage", "计算滑点价格"),
+        3 => ("fee", "计算手续费"),
+        4 => ("ledger_update", "成交落账"),
+        _ => ("order_terminal", "订单成交"),
+      };
+      dict.set_item("step", step_name)?;
+      dict.set_item("label", label)?;
       dict.set_item("timestamp", timestamp)?;
-      dict.set_item("product", &entry.product)?;
       dict.set_item("quantity", signed_quantity)?;
       dict.set_item("intent_quantity", signed_quantity)?;
       dict.set_item("requested_quantity", quantity)?;
@@ -766,8 +786,6 @@ impl NativeTraceBuilder {
       dict.set_item("remaining_quantity", remaining)?;
       dict.set_item("unfilled_quantity", remaining)?;
       dict.set_item("status", status)?;
-      dict.set_item("leg_role", leg)?;
-      dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
       dict.set_item(
         "execution_effect",
         if step < 2 { "mixed" } else if delta > 0.0 { "increase" } else { "reduce" },
@@ -777,33 +795,35 @@ impl NativeTraceBuilder {
       if step < 3 { dict.set_item("fee_cost", py.None())?; }
       else { dict.set_item("fee_cost", fee)?; }
       let detail_dict = match step {
-        0 => construct_detail_template.copy()?,
-        1 => resolve_detail_template.copy()?,
-        2 => slippage_detail_template.copy()?,
-        3 => fee_detail_template.copy()?,
-        5 => empty_detail_template.copy()?,
-        _ => pyo3::types::PyDict::new(py),
+        0 => construct_detail_template.copy()?.unbind(),
+        1 => resolve_detail_template.copy()?.unbind(),
+        2 => slippage_detail_template.copy()?.unbind(),
+        3 => fee_detail_template.clone_ref(py),
+        5 => empty_detail_template.clone_ref(py),
+        _ => pyo3::types::PyDict::new(py).unbind(),
       };
       match step {
         0 => {
+          let detail = detail_dict.bind(py);
           let children = pyo3::types::PyTuple::new(py, [entry.order_text.as_str()])?;
-          detail_dict.set_item("child_order_ids", children)?;
+          detail.set_item("child_order_ids", children)?;
         }
-        1 => { detail_dict.set_item("price", price)?; }
-        2 => { detail_dict.set_item("base_price", price)?; }
+        1 => { detail_dict.bind(py).set_item("price", price)?; }
+        2 => { detail_dict.bind(py).set_item("base_price", price)?; }
         3 => {}
         4 => {
-          detail_dict.set_item("fill_id", format!("{}:fill:1", entry.order_text))?;
-          detail_dict.set_item("ledger_id", format!("private:{alias}"))?;
-          detail_dict.set_item("cash_pool_id", format!("private:{alias}"))?;
-          detail_dict.set_item("account_currency", base_currency)?;
-          detail_dict.set_item("cash_pool_base_currency", base_currency)?;
-          detail_dict.set_item("price", price)?;
-          detail_dict.set_item("fee_cost", fee)?;
-          detail_dict.set_item("cash_before", cash_before)?;
-          detail_dict.set_item("cash_after", cash_after)?;
-          detail_dict.set_item("margin_before", 0.0)?;
-          detail_dict.set_item("margin_after", 0.0)?;
+          let detail = detail_dict.bind(py);
+          detail.set_item("fill_id", format!("{}:fill:1", entry.order_text))?;
+          detail.set_item("ledger_id", &ledger_id_text)?;
+          detail.set_item("cash_pool_id", &ledger_id_text)?;
+          detail.set_item("account_currency", base_currency)?;
+          detail.set_item("cash_pool_base_currency", base_currency)?;
+          detail.set_item("price", price)?;
+          detail.set_item("fee_cost", fee)?;
+          detail.set_item("cash_before", cash_before)?;
+          detail.set_item("cash_after", cash_after)?;
+          detail.set_item("margin_before", 0.0)?;
+          detail.set_item("margin_after", 0.0)?;
         }
         _ => {}
       }
