@@ -541,31 +541,31 @@ impl NativeTraceBuilder {
         _ => ("order_terminal", "订单成交"),
       };
       let template = pyo3::types::PyDict::new(py);
-      template.set_item("order_group_id", "")?;
-      template.set_item("parent_intent_id", "")?;
-      template.set_item("step", step_name)?;
-      template.set_item("label", label)?;
-      template.set_item("leg_role", "atomic_net")?;
-      template.set_item("offset", "open")?;
-      template.set_item("revision", 0)?;
-      template.set_item("effective_price", py.None())?;
-      template.set_item("reject_reason", py.None())?;
+      template.set_item(pyo3::intern!(py, "order_group_id"), "")?;
+      template.set_item(pyo3::intern!(py, "parent_intent_id"), "")?;
+      template.set_item(pyo3::intern!(py, "step"), step_name)?;
+      template.set_item(pyo3::intern!(py, "label"), label)?;
+      template.set_item(pyo3::intern!(py, "leg_role"), "atomic_net")?;
+      template.set_item(pyo3::intern!(py, "offset"), "open")?;
+      template.set_item(pyo3::intern!(py, "revision"), 0)?;
+      template.set_item(pyo3::intern!(py, "effective_price"), py.None())?;
+      template.set_item(pyo3::intern!(py, "reject_reason"), py.None())?;
       templates.push(template.unbind());
     }
     let fee_detail_template = pyo3::types::PyDict::new(py);
-    fee_detail_template.set_item("mode", "zero")?;
-    fee_detail_template.set_item("fixed_rate", 0.0)?;
+    fee_detail_template.set_item(pyo3::intern!(py, "mode"), "zero")?;
+    fee_detail_template.set_item(pyo3::intern!(py, "fixed_rate"), 0.0)?;
     let fee_detail_template = fee_detail_template.unbind();
     let empty_detail_template = pyo3::types::PyDict::new(py);
     let empty_detail_template = empty_detail_template.unbind();
     let construct_detail_template = pyo3::types::PyDict::new(py);
-    construct_detail_template.set_item("group_policy", "sequential_close_then_open")?;
-    construct_detail_template.set_item("paired_execution_policy", py.None())?;
+    construct_detail_template.set_item(pyo3::intern!(py, "group_policy"), "sequential_close_then_open")?;
+    construct_detail_template.set_item(pyo3::intern!(py, "paired_execution_policy"), py.None())?;
     let resolve_detail_template = pyo3::types::PyDict::new(py);
-    resolve_detail_template.set_item("basis", "open")?;
+    resolve_detail_template.set_item(pyo3::intern!(py, "basis"), "open")?;
     let slippage_detail_template = pyo3::types::PyDict::new(py);
-    slippage_detail_template.set_item("mode", "none")?;
-    slippage_detail_template.set_item("slippage_bps", 0.0)?;
+    slippage_detail_template.set_item(pyo3::intern!(py, "mode"), "none")?;
+    slippage_detail_template.set_item(pyo3::intern!(py, "slippage_bps"), 0.0)?;
     let ledger_id_text = format!("private:{alias}");
     let mut entries = Vec::with_capacity(orders.len());
     for (order_id, column, delta, fee, _status) in &orders {
@@ -582,15 +582,15 @@ impl NativeTraceBuilder {
       let order_text = format!("{alias}-{signal_text}-{order_id}");
       let info = &order_info[order_id];
       let base = pyo3::types::PyDict::new(py);
-      base.set_item("order_id", &order_text)?;
-      base.set_item("order_group_id", &info.5)?;
-      base.set_item("parent_intent_id", &info.6)?;
-      base.set_item("strategy_id", alias)?;
-      base.set_item("product", &product)?;
-      base.set_item("leg_role", info.2)?;
-      base.set_item("offset", if info.2 == "close" { "close" } else { "open" })?;
-      base.set_item("revision", 0)?;
-      base.set_item("reject_reason", py.None())?;
+      base.set_item(pyo3::intern!(py, "order_id"), &order_text)?;
+      base.set_item(pyo3::intern!(py, "order_group_id"), &info.5)?;
+      base.set_item(pyo3::intern!(py, "parent_intent_id"), &info.6)?;
+      base.set_item(pyo3::intern!(py, "strategy_id"), alias)?;
+      base.set_item(pyo3::intern!(py, "product"), &product)?;
+      base.set_item(pyo3::intern!(py, "leg_role"), info.2)?;
+      base.set_item(pyo3::intern!(py, "offset"), if info.2 == "close" { "close" } else { "open" })?;
+      base.set_item(pyo3::intern!(py, "revision"), 0)?;
+      base.set_item(pyo3::intern!(py, "reject_reason"), py.None())?;
       entries.push(TraceEntry {
         base: base.unbind(),
         order_id: *order_id, column: *column, delta: *delta, fee: *fee,
@@ -647,57 +647,57 @@ impl NativeTraceBuilder {
         let order_text = format!("{alias}-{signal_text}-{pending_id}");
         let group_id = format!("{alias}-{signal_text}-group-{pending_id}");
         let dict = templates[0].bind(py).copy()?;
-        dict.set_item("order_id", &order_text)?;
-        dict.set_item("order_group_id", &group_id)?;
-        dict.set_item("parent_intent_id", format!("{group_id}:intent"))?;
-        dict.set_item("strategy_id", alias)?;
-        dict.set_item("timestamp", &signal_text)?;
-        dict.set_item("product", product)?;
-        dict.set_item("quantity", delta)?;
-        dict.set_item("intent_quantity", delta)?;
-        dict.set_item("requested_quantity", delta.abs())?;
-        dict.set_item("filled_quantity", 0.0)?;
-        dict.set_item("remaining_quantity", delta.abs())?;
-        dict.set_item("unfilled_quantity", delta.abs())?;
-        dict.set_item("status", "draft")?;
-        dict.set_item("leg_role", leg)?;
-        dict.set_item("offset", if leg == "close" { "close" } else { "open" })?;
-        dict.set_item("execution_effect", "mixed")?;
-        dict.set_item("effective_price", py.None())?;
-        dict.set_item("fee_cost", py.None())?;
+        dict.set_item(pyo3::intern!(py, "order_id"), &order_text)?;
+        dict.set_item(pyo3::intern!(py, "order_group_id"), &group_id)?;
+        dict.set_item(pyo3::intern!(py, "parent_intent_id"), format!("{group_id}:intent"))?;
+        dict.set_item(pyo3::intern!(py, "strategy_id"), alias)?;
+        dict.set_item(pyo3::intern!(py, "timestamp"), &signal_text)?;
+        dict.set_item(pyo3::intern!(py, "product"), product)?;
+        dict.set_item(pyo3::intern!(py, "quantity"), delta)?;
+        dict.set_item(pyo3::intern!(py, "intent_quantity"), delta)?;
+        dict.set_item(pyo3::intern!(py, "requested_quantity"), delta.abs())?;
+        dict.set_item(pyo3::intern!(py, "filled_quantity"), 0.0)?;
+        dict.set_item(pyo3::intern!(py, "remaining_quantity"), delta.abs())?;
+        dict.set_item(pyo3::intern!(py, "unfilled_quantity"), delta.abs())?;
+        dict.set_item(pyo3::intern!(py, "status"), "draft")?;
+        dict.set_item(pyo3::intern!(py, "leg_role"), leg)?;
+        dict.set_item(pyo3::intern!(py, "offset"), if leg == "close" { "close" } else { "open" })?;
+        dict.set_item(pyo3::intern!(py, "execution_effect"), "mixed")?;
+        dict.set_item(pyo3::intern!(py, "effective_price"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "fee_cost"), py.None())?;
         let detail = pyo3::types::PyDict::new(py);
-        detail.set_item("group_policy", "sequential_close_then_open")?;
-        detail.set_item("child_order_ids", pyo3::types::PyTuple::new(py, [order_text.as_str()])?)?;
-        detail.set_item("paired_execution_policy", py.None())?;
-        dict.set_item("details", detail)?;
+        detail.set_item(pyo3::intern!(py, "group_policy"), "sequential_close_then_open")?;
+        detail.set_item(pyo3::intern!(py, "child_order_ids"), pyo3::types::PyTuple::new(py, [order_text.as_str()])?)?;
+        detail.set_item(pyo3::intern!(py, "paired_execution_policy"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "details"), detail)?;
         rows.push(dict.unbind());
         continue;
       }
       if let TracePlanKind::Rounding = plan_kind {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("order_id", "")?;
-        dict.set_item("order_group_id", "")?;
-        dict.set_item("parent_intent_id", "")?;
-        dict.set_item("strategy_id", alias)?;
-        dict.set_item("timestamp", _timestamp)?;
-        dict.set_item("step", "quantity_rounding")?;
-        dict.set_item("label", "按最小买入手数取整")?;
-        dict.set_item("product", py.None())?;
-        dict.set_item("quantity", py.None())?;
-        dict.set_item("intent_quantity", py.None())?;
-        dict.set_item("requested_quantity", py.None())?;
-        dict.set_item("filled_quantity", 0.0)?;
-        dict.set_item("remaining_quantity", py.None())?;
-        dict.set_item("unfilled_quantity", py.None())?;
-        dict.set_item("status", "draft")?;
-        dict.set_item("leg_role", "")?;
-        dict.set_item("offset", "")?;
-        dict.set_item("execution_effect", "mixed")?;
-        dict.set_item("revision", 0)?;
-        dict.set_item("effective_price", py.None())?;
-        dict.set_item("fee_cost", py.None())?;
-        dict.set_item("reject_reason", py.None())?;
-        dict.set_item("details", pyo3::types::PyDict::new(py))?;
+        dict.set_item(pyo3::intern!(py, "order_id"), "")?;
+        dict.set_item(pyo3::intern!(py, "order_group_id"), "")?;
+        dict.set_item(pyo3::intern!(py, "parent_intent_id"), "")?;
+        dict.set_item(pyo3::intern!(py, "strategy_id"), alias)?;
+        dict.set_item(pyo3::intern!(py, "timestamp"), _timestamp)?;
+        dict.set_item(pyo3::intern!(py, "step"), "quantity_rounding")?;
+        dict.set_item(pyo3::intern!(py, "label"), "按最小买入手数取整")?;
+        dict.set_item(pyo3::intern!(py, "product"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "quantity"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "intent_quantity"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "requested_quantity"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "filled_quantity"), 0.0)?;
+        dict.set_item(pyo3::intern!(py, "remaining_quantity"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "unfilled_quantity"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "status"), "draft")?;
+        dict.set_item(pyo3::intern!(py, "leg_role"), "")?;
+        dict.set_item(pyo3::intern!(py, "offset"), "")?;
+        dict.set_item(pyo3::intern!(py, "execution_effect"), "mixed")?;
+        dict.set_item(pyo3::intern!(py, "revision"), 0)?;
+        dict.set_item(pyo3::intern!(py, "effective_price"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "fee_cost"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "reject_reason"), py.None())?;
+        dict.set_item(pyo3::intern!(py, "details"), pyo3::types::PyDict::new(py))?;
         rows.push(dict.unbind());
         continue;
       }
@@ -711,35 +711,35 @@ impl NativeTraceBuilder {
         let group_id = format!("{alias}-{signal_text}-group-{order_id}");
         let (price, _fee, _leg, _cash_before, _cash_after, _g, _p) = &order_info[&order_id];
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("order_id", &order_text)?;
-        dict.set_item("order_group_id", &group_id)?;
-        dict.set_item("parent_intent_id", format!("{group_id}:intent"))?;
-        dict.set_item("strategy_id", alias)?;
-        dict.set_item("timestamp", timestamp)?;
-        dict.set_item("step", "execution_cash_constraint")?;
-        dict.set_item("label", "成交增量保证金约束")?;
-        dict.set_item("product", product)?;
-        dict.set_item("quantity", after)?;
-        dict.set_item("intent_quantity", before)?;
-        dict.set_item("requested_quantity", before)?;
-        dict.set_item("filled_quantity", 0.0)?;
-        dict.set_item("remaining_quantity", before)?;
-        dict.set_item("unfilled_quantity", before)?;
-        dict.set_item("status", "accepted")?;
-        dict.set_item("leg_role", "open")?;
-        dict.set_item("offset", "open")?;
-        dict.set_item("execution_effect", "increase")?;
-        dict.set_item("revision", 0)?;
-        dict.set_item("effective_price", price)?;
-        dict.set_item("fee_cost", 0.0)?;
-        dict.set_item("reject_reason", py.None())?;
+        dict.set_item(pyo3::intern!(py, "order_id"), &order_text)?;
+        dict.set_item(pyo3::intern!(py, "order_group_id"), &group_id)?;
+        dict.set_item(pyo3::intern!(py, "parent_intent_id"), format!("{group_id}:intent"))?;
+        dict.set_item(pyo3::intern!(py, "strategy_id"), alias)?;
+        dict.set_item(pyo3::intern!(py, "timestamp"), timestamp)?;
+        dict.set_item(pyo3::intern!(py, "step"), "execution_cash_constraint")?;
+        dict.set_item(pyo3::intern!(py, "label"), "成交增量保证金约束")?;
+        dict.set_item(pyo3::intern!(py, "product"), product)?;
+        dict.set_item(pyo3::intern!(py, "quantity"), after)?;
+        dict.set_item(pyo3::intern!(py, "intent_quantity"), before)?;
+        dict.set_item(pyo3::intern!(py, "requested_quantity"), before)?;
+        dict.set_item(pyo3::intern!(py, "filled_quantity"), 0.0)?;
+        dict.set_item(pyo3::intern!(py, "remaining_quantity"), before)?;
+        dict.set_item(pyo3::intern!(py, "unfilled_quantity"), before)?;
+        dict.set_item(pyo3::intern!(py, "status"), "accepted")?;
+        dict.set_item(pyo3::intern!(py, "leg_role"), "open")?;
+        dict.set_item(pyo3::intern!(py, "offset"), "open")?;
+        dict.set_item(pyo3::intern!(py, "execution_effect"), "increase")?;
+        dict.set_item(pyo3::intern!(py, "revision"), 0)?;
+        dict.set_item(pyo3::intern!(py, "effective_price"), price)?;
+        dict.set_item(pyo3::intern!(py, "fee_cost"), 0.0)?;
+        dict.set_item(pyo3::intern!(py, "reject_reason"), py.None())?;
         let detail = pyo3::types::PyDict::new(py);
-        detail.set_item("before_quantity", before)?;
-        detail.set_item("after_quantity", after)?;
-        detail.set_item("scale", scale)?;
-        detail.set_item("available_cash", available)?;
-        detail.set_item("required_cash", required)?;
-        dict.set_item("details", detail)?;
+        detail.set_item(pyo3::intern!(py, "before_quantity"), before)?;
+        detail.set_item(pyo3::intern!(py, "after_quantity"), after)?;
+        detail.set_item(pyo3::intern!(py, "scale"), scale)?;
+        detail.set_item(pyo3::intern!(py, "available_cash"), available)?;
+        detail.set_item(pyo3::intern!(py, "required_cash"), required)?;
+        dict.set_item(pyo3::intern!(py, "details"), detail)?;
         rows.push(dict.unbind());
         continue;
       }
@@ -776,24 +776,24 @@ impl NativeTraceBuilder {
         4 => ("ledger_update", "成交落账"),
         _ => ("order_terminal", "订单成交"),
       };
-      dict.set_item("step", step_name)?;
-      dict.set_item("label", label)?;
-      dict.set_item("timestamp", timestamp)?;
-      dict.set_item("quantity", signed_quantity)?;
-      dict.set_item("intent_quantity", signed_quantity)?;
-      dict.set_item("requested_quantity", quantity)?;
-      dict.set_item("filled_quantity", filled)?;
-      dict.set_item("remaining_quantity", remaining)?;
-      dict.set_item("unfilled_quantity", remaining)?;
-      dict.set_item("status", status)?;
+      dict.set_item(pyo3::intern!(py, "step"), step_name)?;
+      dict.set_item(pyo3::intern!(py, "label"), label)?;
+      dict.set_item(pyo3::intern!(py, "timestamp"), timestamp)?;
+      dict.set_item(pyo3::intern!(py, "quantity"), signed_quantity)?;
+      dict.set_item(pyo3::intern!(py, "intent_quantity"), signed_quantity)?;
+      dict.set_item(pyo3::intern!(py, "requested_quantity"), quantity)?;
+      dict.set_item(pyo3::intern!(py, "filled_quantity"), filled)?;
+      dict.set_item(pyo3::intern!(py, "remaining_quantity"), remaining)?;
+      dict.set_item(pyo3::intern!(py, "unfilled_quantity"), remaining)?;
+      dict.set_item(pyo3::intern!(py, "status"), status)?;
       dict.set_item(
         "execution_effect",
         if step < 2 { "mixed" } else if delta > 0.0 { "increase" } else { "reduce" },
       )?;
-      if step == 0 { dict.set_item("effective_price", py.None())?; }
-      else { dict.set_item("effective_price", price)?; }
-      if step < 3 { dict.set_item("fee_cost", py.None())?; }
-      else { dict.set_item("fee_cost", fee)?; }
+      if step == 0 { dict.set_item(pyo3::intern!(py, "effective_price"), py.None())?; }
+      else { dict.set_item(pyo3::intern!(py, "effective_price"), price)?; }
+      if step < 3 { dict.set_item(pyo3::intern!(py, "fee_cost"), py.None())?; }
+      else { dict.set_item(pyo3::intern!(py, "fee_cost"), fee)?; }
       let detail_dict = match step {
         0 => construct_detail_template.copy()?.unbind(),
         1 => resolve_detail_template.copy()?.unbind(),
@@ -806,29 +806,29 @@ impl NativeTraceBuilder {
         0 => {
           let detail = detail_dict.bind(py);
           let children = pyo3::types::PyTuple::new(py, [entry.order_text.as_str()])?;
-          detail.set_item("child_order_ids", children)?;
+          detail.set_item(pyo3::intern!(py, "child_order_ids"), children)?;
         }
-        1 => { detail_dict.bind(py).set_item("price", price)?; }
-        2 => { detail_dict.bind(py).set_item("base_price", price)?; }
+        1 => { detail_dict.bind(py).set_item(pyo3::intern!(py, "price"), price)?; }
+        2 => { detail_dict.bind(py).set_item(pyo3::intern!(py, "base_price"), price)?; }
         3 => {}
         4 => {
           let detail = detail_dict.bind(py);
-          detail.set_item("fill_id", format!("{}:fill:1", entry.order_text))?;
-          detail.set_item("ledger_id", &ledger_id_text)?;
-          detail.set_item("cash_pool_id", &ledger_id_text)?;
-          detail.set_item("account_currency", base_currency)?;
-          detail.set_item("cash_pool_base_currency", base_currency)?;
-          detail.set_item("price", price)?;
-          detail.set_item("fee_cost", fee)?;
-          detail.set_item("cash_before", cash_before)?;
-          detail.set_item("cash_after", cash_after)?;
-          detail.set_item("margin_before", 0.0)?;
-          detail.set_item("margin_after", 0.0)?;
+          detail.set_item(pyo3::intern!(py, "fill_id"), format!("{}:fill:1", entry.order_text))?;
+          detail.set_item(pyo3::intern!(py, "ledger_id"), &ledger_id_text)?;
+          detail.set_item(pyo3::intern!(py, "cash_pool_id"), &ledger_id_text)?;
+          detail.set_item(pyo3::intern!(py, "account_currency"), base_currency)?;
+          detail.set_item(pyo3::intern!(py, "cash_pool_base_currency"), base_currency)?;
+          detail.set_item(pyo3::intern!(py, "price"), price)?;
+          detail.set_item(pyo3::intern!(py, "fee_cost"), fee)?;
+          detail.set_item(pyo3::intern!(py, "cash_before"), cash_before)?;
+          detail.set_item(pyo3::intern!(py, "cash_after"), cash_after)?;
+          detail.set_item(pyo3::intern!(py, "margin_before"), 0.0)?;
+          detail.set_item(pyo3::intern!(py, "margin_after"), 0.0)?;
         }
         _ => {}
       }
       let _ = (fee_value, seq);
-      dict.set_item("details", detail_dict)?;
+      dict.set_item(pyo3::intern!(py, "details"), detail_dict)?;
       rows.push(dict.unbind());
     }
     Ok(rows)
@@ -2135,12 +2135,12 @@ impl OrderAttemptRecord {
 
   fn to_audit_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     let dict = pyo3::types::PyDict::new(py);
-    dict.set_item("type", "OrderAttempt")?;
-    dict.set_item("attempt_id", &self.attempt_id)?;
-    dict.set_item("order_id", &self.order_id)?;
-    dict.set_item("revision", self.revision)?;
-    dict.set_item("timestamp", self.timestamp.clone_ref(py))?;
-    dict.set_item("market_timestamp", self.market_timestamp.clone_ref(py))?;
+    dict.set_item(pyo3::intern!(py, "type"), "OrderAttempt")?;
+    dict.set_item(pyo3::intern!(py, "attempt_id"), &self.attempt_id)?;
+    dict.set_item(pyo3::intern!(py, "order_id"), &self.order_id)?;
+    dict.set_item(pyo3::intern!(py, "revision"), self.revision)?;
+    dict.set_item(pyo3::intern!(py, "timestamp"), self.timestamp.clone_ref(py))?;
+    dict.set_item(pyo3::intern!(py, "market_timestamp"), self.market_timestamp.clone_ref(py))?;
     Ok(dict.into())
   }
 }
