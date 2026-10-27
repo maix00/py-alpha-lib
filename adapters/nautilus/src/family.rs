@@ -232,13 +232,14 @@ impl FamilyStrategy {
         for index in 0..count {
             if !self.active[index] {continue;}
             let instrument_id = self.instruments[index];
-            let delta = {
+            let (delta, position_id) = {
                 let cache = self.cache_ref();
-                let position: Decimal = cache
-                    .positions_open_refs(None, Some(&instrument_id), Some(&strategy_id), None, None)
-                    .iter()
-                    .map(|p| p.signed_qty)
-                    .sum();
+                let positions = cache.positions_open_refs(
+                    None, Some(&instrument_id), Some(&strategy_id), None, None);
+                let position: Decimal = positions.iter().map(|p| p.signed_qty).sum();
+                // Targets adjust this strategy's position, not a new HEDGING lot.
+                // Nautilus owns closes, partial fills and over-close reversals.
+                let position_id = positions.first().map(|p| p.id);
                 let open = cache.orders_open_refs(
                     None,
                     Some(&instrument_id),
@@ -269,7 +270,7 @@ impl FamilyStrategy {
                             }
                     })
                     .sum();
-                Decimal::from(self.targets[index] as i64) - position - pending
+                (Decimal::from(self.targets[index] as i64) - position - pending, position_id)
             };
             if delta == Decimal::ZERO {
                 continue;
@@ -290,7 +291,7 @@ impl FamilyStrategy {
                 None,
                 None,
             );
-            self.submit_order(order, None, None, None)?;
+            self.submit_order(order, position_id, None, None)?;
         }
         Ok(())
     }
