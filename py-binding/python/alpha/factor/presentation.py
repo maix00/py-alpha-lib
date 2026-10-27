@@ -85,8 +85,8 @@ def _native_fields(expr):
     elif kind == 'GroupByScopeOp':
         fields={'scope':expr.owner.scope,'trunc_start':None,'trunc_end':None}
     elif kind == 'BarCountScope':
-        if type(expr.count).__name__ == 'ConstExpr':
-            count_value = expr.count.value
+        if isinstance(expr.count, (int, float)) or type(expr.count).__name__ == 'ConstExpr':
+            count_value = expr.count if isinstance(expr.count, (int, float)) else expr.count.value
             count=SimpleNamespace(value=count_value,_structural_key=lambda: ('count',count_value))
             count._presentation_fields=lambda: ('ConstExpr', {'value':count_value})
         else:
