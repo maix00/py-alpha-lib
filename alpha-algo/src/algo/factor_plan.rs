@@ -157,6 +157,7 @@ struct NodeState {
     signal_next: Vec<Option<i64>>,
     signal_session: Option<usize>,
     signal_pending: Vec<Option<f64>>,
+    signal_pending_at: Vec<Option<i64>>,
     signal_prev: Vec<f64>,
     scope_session: Option<usize>,
     cross_scratch: Vec<(usize, f64)>,
@@ -278,6 +279,7 @@ impl FactorPlanKernel {
                 signal_next: if signal_state { vec![None; products] } else { Vec::new() },
                 signal_session: None,
                 signal_pending: if signal_state { vec![None; products] } else { Vec::new() },
+                signal_pending_at: if signal_state { vec![None; products] } else { Vec::new() },
                 signal_prev: if signal_state { vec![f64::NAN; products] } else { Vec::new() },
                 scope_session: None,
                 cross_scratch: Vec::new(),
@@ -636,7 +638,10 @@ impl FactorPlanKernel {
                     let input = &head[*child];
                     let node = &mut self.nodes[index];
                     if !sessions.is_empty() {
-                        let session = sessions.iter().position(|(start, end, _)| timestamp_ns >= *start && timestamp_ns <= *end);
+                        let session = node.signal_session.filter(|&i| timestamp_ns>=sessions[i].0 && timestamp_ns<=sessions[i].1).or_else(|| {
+                        let at=sessions.partition_point(|(start,_,_)| *start<=timestamp_ns);
+                        at.checked_sub(1).filter(|&i|timestamp_ns<=sessions[i].1)
+                    });
                         if session != node.scope_session { node.scope_session = session; node.scope_base.fill(current as usize); for state in node.rolling.iter_mut().flatten() { state.reset_at(current); } }
                     } else if current as usize % *count == 0 { node.scope_base.fill(current as usize); }
                     for product in 0..products {
@@ -648,11 +653,15 @@ impl FactorPlanKernel {
                 ExprSpec::Signal { child, signal_ns, sessions, basepoint, include_current, partial } => {
                     let input = &head[*child];
                     let node = &mut self.nodes[index];
-                    let session = sessions.iter().position(|(start, end, _)| timestamp_ns >= *start && timestamp_ns <= *end);
-                    if session != node.signal_session { node.signal_session = session; node.signal_last.fill(f64::NAN); node.signal_next.fill(None); node.signal_pending.fill(None); node.signal_prev.fill(f64::NAN); }
+                    let session = node.signal_session.filter(|&i| timestamp_ns>=sessions[i].0 && timestamp_ns<=sessions[i].1).or_else(|| {
+                        let at=sessions.partition_point(|(start,_,_)| *start<=timestamp_ns);
+                        at.checked_sub(1).filter(|&i|timestamp_ns<=sessions[i].1)
+                    });
+                    if session != node.signal_session { node.signal_session = session; node.signal_last.fill(f64::NAN); node.signal_next.fill(None); node.signal_pending.fill(None); node.signal_pending_at.fill(None); node.signal_prev.fill(f64::NAN); }
+                    if !sessions.is_empty() && session.is_none() {out.fill(f64::NAN);continue;}
                     let session_end = session.map(|position| sessions[position].1);
                     for product in 0..products {
-                        if node.signal_next[product].is_none() { let anchor = session.map_or(timestamp_ns, |position| sessions[position].2); let first = if anchor % *signal_ns == 0 { anchor } else { (anchor / *signal_ns + 1) * *signal_ns }; node.signal_next[product] = Some(first); }
+                        if node.signal_next[product].is_none() { let anchor = session.map_or(timestamp_ns, |position| sessions[position].2); let first = if session.is_some() {anchor} else {-(-anchor).div_euclid(*signal_ns) * *signal_ns}; node.signal_next[product] = Some(first); }
                         let next = node.signal_next[product].unwrap_or(i64::MAX);
                         let target = timestamp_ns >= next;
                         let emit_partial = partial == "emit" && session_end == Some(timestamp_ns) && timestamp_ns < next;
@@ -661,13 +670,18 @@ impl FactorPlanKernel {
                             // samples only observations at/before that target,
                             // never the later Bar which reveals the gap.
                             let last = basepoint.as_str() == "last";
-                            let latest = if target && last { next + ((timestamp_ns - next) / signal_ns) * signal_ns } else { next };
-                            let value = if !last { node.signal_pending[product].unwrap_or(if *include_current { input[product] } else { f64::NAN }) }
+                            let latest = if target { next + ((timestamp_ns - next) / signal_ns) * signal_ns } else { timestamp_ns };
+                            let value = if !last {
+                                let eligible=node.signal_pending_at[product].is_some_and(|at| at>latest.saturating_sub(*signal_ns) && (at<latest || *include_current && at==latest));
+                                if eligible {node.signal_pending[product].unwrap_or(f64::NAN)}
+                                else if *include_current && timestamp_ns==latest {input[product]} else {f64::NAN}
+                            }
                                 else if *include_current && (!target || timestamp_ns == latest) { input[product] }
                                 else { node.signal_prev[product] };
-                            node.signal_last[product] = value; node.signal_pending[product] = None;
+                            node.signal_last[product] = value; node.signal_pending[product] = None; node.signal_pending_at[product]=None;
+                            if !last && timestamp_ns>latest {node.signal_pending[product]=Some(input[product]);node.signal_pending_at[product]=Some(timestamp_ns);}
                             if target { node.signal_next[product] = Some(latest.saturating_add(*signal_ns)); }
-                        } else if basepoint.as_str() == "first" && node.signal_pending[product].is_none() { node.signal_pending[product] = Some(input[product]); }
+                        } else if basepoint.as_str() == "first" && node.signal_pending[product].is_none() { node.signal_pending[product] = Some(input[product]); node.signal_pending_at[product]=Some(timestamp_ns); }
                         node.signal_prev[product] = input[product];
                         out[product] = node.signal_last[product];
                     }

@@ -68,106 +68,55 @@ class SignalAlign(FactorExpr):
             return ("alpha.factor.SignalAlign", self.signal_freq, self.basepoint,
                     self.child._structural_key())
         return ("alpha.factor.SignalAlign:v2", self.signal_freq,
-                type(self.scope).__name__ if self.scope is not None else None,
+                (type(self.scope).__name__,tuple((s.start_ns,s.end_ns,str(s.trading_day)) for s in getattr(self.scope,"sessions",()))) if self.scope is not None else None,
                 self.scope_anchor, self.partial, self.basepoint,
                 self.daily_basepoint, self.end_session_skip, self.end_session_gap,
                 self.include_current, self.child._structural_key())
 
-    def _target_times(self, times: pd.DatetimeIndex, ctx) -> pd.DatetimeIndex:
-        def daily_grid(start, end):
-            anchor = self.scope_anchor
-            if anchor == "end":
-                return pd.date_range(end=end.floor(self.signal_freq), start=start, freq=self.signal_freq)
-            if anchor != "start":
-                clock = pd.Timestamp(anchor).time()
-                offset = pd.Timedelta(hours=clock.hour, minutes=clock.minute, seconds=clock.second)
-                first = start.normalize() + offset
-                if first < start:
-                    first += pd.Timedelta(days=1)
-                return pd.date_range(first, end, freq=self.signal_freq)
-            return pd.date_range(start.ceil(self.signal_freq), end, freq=self.signal_freq)
+    # Evaluation is inherited: the shared Rust matrix Plan owns sampling.
 
-        if self.scope is None:
-            return daily_grid(times[0], times[-1])
-        if isinstance(self.scope, TradingDayScope):
-            days = ctx.trading_days if ctx.trading_days is not None else times.normalize()
-            groups: dict[object, list[int]] = {}
-            for position, day in enumerate(days):
-                groups.setdefault(day, []).append(position)
-            targets = []
-            for positions in groups.values():
-                start, end = times[positions[0]], times[positions[-1]]
-                grid = daily_grid(start, end)
-                targets.extend(grid.tolist())
-                if self.partial == "emit" and (not grid.empty and grid[-1] < end):
-                    targets.append(end)
-            return pd.DatetimeIndex(sorted(targets))
-        if isinstance(self.scope, SessionScope):
-            sessions = self.scope.sessions
-            session_index = 0
-            groups: dict[int, list[int]] = {}
-            for position, timestamp in enumerate(times):
-                while session_index + 1 < len(sessions) and timestamp > pd.Timestamp(sessions[session_index].end_ns, tz=timestamp.tz):
-                    session_index += 1
-                if timestamp < pd.Timestamp(sessions[session_index].start_ns, tz=timestamp.tz) or timestamp > pd.Timestamp(sessions[session_index].end_ns, tz=timestamp.tz):
-                    raise ValueError("bar falls outside the frozen session calendar")
-                groups.setdefault(session_index, []).append(position)
-            targets = []
-            for positions in groups.values():
-                start, end = times[positions[0]], times[positions[-1]]
-                grid = daily_grid(start, end)
-                targets.extend(grid.tolist())
-                if self.partial == "emit" and (not grid.empty and grid[-1] < end):
-                    targets.append(end)
-            return pd.DatetimeIndex(sorted(targets))
-        raise TypeError(f"unsupported SignalAlign scope {type(self.scope).__name__}")
 
-    def evaluate(self, ctx) -> pd.DataFrame:
-        source = self.child.evaluate(ctx)
-        if isinstance(source.index, pd.MultiIndex):
-            signal_levels = [
-                index for index, name in enumerate(source.index.names)
-                if str(name).startswith("_SIGNAL@")
-            ]
-            if not signal_levels:
-                raise TypeError("nested SignalAlign requires a _SIGNAL@ level")
-            times = pd.DatetimeIndex(
-                source.index.get_level_values(signal_levels[-1]),
-            )
-        elif isinstance(source.index, pd.DatetimeIndex):
-            times = source.index
+def signal_partitions(expression, index, trading_days=None):
+    """Freeze calendar metadata only; Rust generates/samples all target slots."""
+    if not isinstance(index,pd.DatetimeIndex):
+        raise TypeError('SignalAlign requires a DatetimeIndex source')
+    if index.empty:
+        return []
+    interval=int(pd.Timedelta(expression.signal_freq).value)
+    if interval<=0:
+        raise ValueError('signal frequency must be positive')
+    first,last=int(index[0].value),int(index[-1].value)
+    scope=expression.scope
+    if isinstance(scope,SessionScope) or isinstance(scope,TradingDayScope) and scope.sessions:
+        groups=[(int(x.start_ns),int(x.end_ns),True) for x in scope.sessions]
+    elif isinstance(scope,TradingDayScope):
+        labels=np.asarray(index.normalize() if trading_days is None else trading_days)
+        starts=np.r_[0,np.flatnonzero(labels[1:]!=labels[:-1])+1]
+        ends=np.r_[starts[1:]-1,len(index)-1]
+        groups=[(int(index[a].value),int(index[b].value),True) for a,b in zip(starts,ends)]
+    elif scope is None:
+        groups=[(first,last,True)]
+    else:
+        raise TypeError(f'unsupported SignalAlign scope {type(scope).__name__}')
+    result=[]
+    for start,end,closed in groups:
+        if end<first or start>last:
+            continue
+        anchor=expression.scope_anchor
+        if anchor=='end':
+            # A scope-less legacy grid begins at the first observation. A frozen
+            # calendar end fixes the phase independently of the loaded prefix.
+            target=start if scope is None else end-((end-start)//interval)*interval
+        elif anchor=='start':
+            target=-(-start//interval)*interval
         else:
-            raise TypeError("SignalAlign requires a DatetimeIndex source")
-        target = self._target_times(times, ctx)
-        from alpha import BatchPlan
-        source_ns = times.as_unit("ns").asi8
-        target_ns = target.as_unit("ns").asi8
-        if self.basepoint == "first":
-            previous = np.concatenate(([target_ns[0] - 1], target_ns[:-1]))
-            positions = np.searchsorted(source_ns, previous, side="right")
-            valid_first = positions < len(source_ns)
-            positions = np.where(
-                valid_first & (source_ns[np.clip(positions, 0, max(len(source_ns) - 1, 0))] <= target_ns)
-                if len(source_ns) else np.zeros_like(target_ns, dtype=bool),
-                positions, -1,
-            )
-        elif not self.include_current:
-            positions = np.searchsorted(source_ns, target_ns, side="left") - 1
-        else:
-            positions = BatchPlan.asof_indices(source_ns, target_ns)
-        positions = np.asarray(positions, dtype=np.int64)
-        valid = (positions >= 0) & (positions < len(source_ns))
-        safe = np.clip(positions, 0, max(len(source_ns) - 1, 0))
-        positions = np.where(valid & (source_ns[safe] <= target_ns) if len(source_ns) else np.zeros_like(valid), positions, -1)
-        positions = np.asarray(positions, dtype=np.int64)
-        valid = positions >= 0
-        out = {}
-        for product in source.columns:
-            values = source[product].to_numpy(dtype=float)
-            aligned = np.full(len(positions), np.nan, dtype=float)
-            aligned[valid] = values[positions[valid]]
-            out[product] = aligned
-        return pd.DataFrame(out, index=target)
+            clock=pd.Timestamp(anchor).time()
+            stamp=pd.Timestamp(start,unit='ns',tz=index.tz)
+            target=int((stamp.normalize()+pd.Timedelta(hours=clock.hour,minutes=clock.minute,seconds=clock.second)).value)
+            if target<start:
+                target+=86400000000000
+        result.append([start,min(end,last),target,int(closed and last>=end)])
+    return result
 
 
 def _method(self, signal_freq: str, scope=None, basepoint: str = "last", **kwargs):

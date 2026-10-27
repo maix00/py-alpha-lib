@@ -290,3 +290,23 @@ Hosts implement only `_presentation_fields()` to translate domain field types.
 formula-template DTOs for editor previews (renderer version 7); it does not load
 family source, resolve remote dependencies, or execute factors. Browsers should
 render its LaTeX response, not maintain another formula substitution algorithm.
+
+Public batch `SignalAlign` and `TermStructureExpr` now compile into the Rust
+matrix Plan. Python freezes input/calendar metadata; Rust generates causal
+sampling slots, carries inner values forward by availability and computes all
+curve metrics. `evaluate_term_metric` is a thin compatibility call to that same
+Plan, with no NumPy polynomial fit. Curve packing is shared per input column;
+requested ranks/depth cannot allocate slots beyond the supplied curves.
+
+Signal `first` does not reuse observations from an older empty bucket. Frozen
+calendar anchors keep their phase; a target at 150 cannot consume a Bar at 200.
+This corrects previous gap/anchor behavior, so corrected outputs can differ from
+old erroneous runs. Scoped signal values do not forward-fill across sessions.
+`plan_blockers(..., execution="batch"|"incremental"|"bridge")` distinguishes entry
+points instead of claiming a globally unsupported node merely from its name.
+
+`scope_plan_outputs` specializes cross-sectional barriers by frozen product
+universe while sharing product-local ancestors. Existing Rust product/where/
+cross nodes perform the work; no second rolling state is added for each strategy
+when its input and time semantics are the same. Different universes require
+different cross outputs even if they reference the same immutable factor.

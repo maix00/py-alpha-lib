@@ -28,6 +28,19 @@ impl BatchPlan {
     }
 
     #[staticmethod]
+    fn asof_partition_indices(source: PyReadonlyArray1<i64>, target: PyReadonlyArray1<i64>, partitions: Vec<[i64;4]>) -> PyResult<Vec<i64>> {
+        Ok(alpha_algo::PanelPlan::asof_partition_indices(source.as_slice()?,target.as_slice()?,&partitions)?)
+    }
+
+    #[staticmethod]
+    fn signal_grid(times: PyReadonlyArray1<i64>, observed: PyReadonlyArray1<u8>, products: usize,
+        partitions: Vec<[i64;4]>, period: i64, first: bool, inclusive: bool,
+        partial: bool) -> PyResult<(Vec<i64>, Vec<i64>)> {
+        Ok(alpha_algo::PanelPlan::signal_grid(times.as_slice()?, observed.as_slice()?, products,
+            &partitions, period, first, inclusive, partial)?)
+    }
+
+    #[staticmethod]
     fn signal_indices(keys: PyReadonlyArray1<i64>, times: PyReadonlyArray1<i64>, multiple: usize, basepoint: &str, mask: Vec<bool>, gap: Option<i64>) -> PyResult<Vec<usize>> {
         Ok(alpha_algo::PanelPlan::signal_indices(keys.as_slice()?, times.as_slice()?, multiple, basepoint, mask, gap)?)
     }

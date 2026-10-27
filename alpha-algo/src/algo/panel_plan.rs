@@ -89,6 +89,66 @@ impl PanelPlan {
         }
         Ok(target.iter().map(|&t| {let j=order.partition_point(|&(s,_)|s<=t); if j==0 {-1} else {order[j-1].1 as i64}}).collect())
     }
+    pub fn asof_partition_indices(source: &[i64], target: &[i64], partitions: &[[i64;4]]) -> Result<Vec<i64>> {
+        let mut mapping=Self::asof_indices(source,target)?;
+        let mut session=0;
+        for (&time,slot) in target.iter().zip(mapping.iter_mut()) {
+            while session<partitions.len() && time>partitions[session][1] {session+=1;}
+            if session==partitions.len() || time<partitions[session][0]
+                || *slot>=0 && source[*slot as usize]<partitions[session][0] {*slot=-1;}
+        }
+        Ok(mapping)
+    }
+
+    /// Calendar targets and causal per-product source slots. No values copied.
+    pub fn signal_grid(times: &[i64], observed: &[u8], products: usize,
+        partitions: &[[i64; 4]], period: i64, first: bool, inclusive: bool,
+        partial: bool) -> Result<(Vec<i64>, Vec<i64>)> {
+        if period <= 0 || observed.len() != times.len()*products
+            || times.windows(2).any(|w|w[0]>=w[1]) {
+            return Err(error("invalid causal signal input grid"));
+        }
+        let mut targets=Vec::new();
+        let mut ranges=Vec::new();
+        for &[start,end,anchor,closed] in partitions {
+            if end<start {return Err(error("invalid signal calendar bounds"));}
+            let begin=targets.len();
+            let mut next=anchor;
+            if next<start { next=next.checked_add((start-next+period-1)/period*period)
+                .ok_or_else(||error("signal timestamp overflow"))?; }
+            while next<=end {
+                targets.push(next);
+                let Some(value)=next.checked_add(period) else {break}; next=value;
+            }
+            if partial && closed!=0 && targets.get(begin..).is_some_and(|v|v.last().copied()!=Some(end)) {targets.push(end);}
+            ranges.push((begin,targets.len(),start,end));
+        }
+        if targets.windows(2).any(|w|w[0]>=w[1]) {return Err(error("signal calendar partitions overlap"));}
+        let mut mapping=vec![-1;targets.len()*products];
+        for g in 0..products {
+            let mut cursor=0;
+            for &(begin,end,start,_) in &ranges {
+                while cursor<times.len() && times[cursor]<start {cursor+=1;}
+                let mut last=None;
+                let mut previous_target=start.saturating_sub(1);
+                for k in begin..end {
+                    let target=targets[k];
+                    let mut earliest=None;
+                    while cursor<times.len() && (times[cursor]<target || inclusive && times[cursor]==target) {
+                        if observed[g*times.len()+cursor]!=0 {
+                            last=Some(cursor);
+                            if times[cursor]>previous_target && earliest.is_none(){earliest=Some(cursor);}
+                        }
+                        cursor+=1;
+                    }
+                    mapping[g*targets.len()+k]=if first {earliest} else {last}.map_or(-1,|i|i as i64);
+                    previous_target=target;
+                }
+            }
+        }
+        Ok((targets,mapping))
+    }
+
     pub fn signal_indices(keys: &[i64], times: &[i64], multiple: usize, basepoint: &str, mask: Vec<bool>, gap: Option<i64>) -> Result<Vec<usize>> {
         if keys.len()!=times.len() || multiple==0 {return Err(error("invalid signal grid"));}
         let mut base=vec![false;keys.len()];
@@ -144,10 +204,10 @@ impl PanelPlan {
                     owned(out, products)
                 },
                 "reindex"=> {
-                    if node.indices.len()!=rows || node.indices.iter().any(|&i|i>=args[0].rows as i64){return Err(error("invalid reindex mapping"));}
+                    if (node.indices.len()!=rows && node.indices.len()!=rows*width) || node.indices.iter().any(|&i|i>=args[0].rows as i64){return Err(error("invalid reindex mapping"));}
                     if let Data::Scalar(v)=args[0].data {Value{data:Data::Scalar(v),rows,width:0}} else {
                         let mut out=vec![f64::NAN;rows*width];
-                        for g in 0..width {for(t,&s)in node.indices.iter().enumerate(){if s>=0{out[g*rows+t]=args[0].at(g,s as usize);}}}owned(out,width)
+                        for g in 0..width {for t in 0..rows {let s=node.indices[if node.indices.len()==rows {t}else{g*rows+t}];if s>=0{out[g*rows+t]=args[0].at(g,s as usize);}}}owned(out,width)
                     }
                 },
                 "term"=> {
@@ -527,5 +587,24 @@ mod scope_quantile_tests {
         assert_eq!(out[0][1], 1.5);
         assert_eq!(out[0][2], 3.0);
         assert_eq!(out[0][3], 3.5);
+    }
+}
+
+#[cfg(test)]
+mod causal_signal_grid_tests {
+    use super::*;
+    #[test]
+    fn masks_sparse_rows_and_rejects_future_values() {
+        let (targets,mapping)=PanelPlan::signal_grid(&[0,1,2,3,4],&[1,1,1,1,1,0,1,0,1,0],2,&[[0,4,0,1]],2,false,true,false).unwrap();
+        assert_eq!(targets,[0,2,4]);assert_eq!(mapping,[0,2,4,-1,1,3]);
+    }
+    #[test]
+    fn no_cross_session_forward_fill() {
+        assert_eq!(PanelPlan::asof_partition_indices(&[2,8],&[2,4,6,7,8],&[[0,3,0,1],[7,9,7,1]]).unwrap(),[0,-1,-1,-1,1]);
+    }
+    #[test]
+    fn first_does_not_reuse_empty_buckets() {
+        let (times,slots)=PanelPlan::signal_grid(&[1,4,11,12,15,16],&[1;6],1,&[[1,16,5,1]],5,true,true,false).unwrap();
+        assert_eq!(times,[5,10,15]);assert_eq!(slots,[0,-1,2]);
     }
 }

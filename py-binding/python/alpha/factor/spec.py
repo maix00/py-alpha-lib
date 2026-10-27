@@ -155,7 +155,7 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
                         if first < start:
                             first += 86_400_000_000_000
                     else:
-                        first = start
+                        first = -(-start // signal_ns) * signal_ns
                     sessions.append([start, end, first])
                 node["sessions"] = sessions
             elif expr.scope is not None:
@@ -197,25 +197,67 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
     return {"columns": columns, "keys": keys, "nodes": nodes, "outputs": outputs}
 
 
-def plan_blockers(expression: Any) -> tuple[str, ...]:
-    """Explicitly list nodes that the Rust plan cannot execute yet."""
-    from .signal import SignalAlign
-
-    blockers: list[str] = []
-
-    def visit(node) -> None:
-        if isinstance(node, SignalAlign):
-            blockers.append("SignalAlign")
-            return
-        if type(node).__name__ in {"TermStructureExpr", "CategoryBoolRef", "MatchValueRef"}:
-            blockers.append(type(node).__name__)
-            return
-        for child in getattr(node, "operands", ()) or ():
-            visit(child)
-        for attribute in ("data", "operand", "owner", "condition", "when_true", "when_false"):
-            child = getattr(node, attribute, None)
-            if child is not None and hasattr(child, "_structural_key"):
-                visit(child)
-
+def plan_blockers(expression: Any, *, execution="batch", products=None, categories=None) -> tuple[str, ...]:
+    """Report the requested execution entry, not a stale global node blacklist."""
+    if execution not in {"batch","incremental","bridge"}:
+        raise ValueError('unknown factor execution entry')
+    if execution != 'batch':
+        try:
+            return () if to_plan_spec([expression],products=products,categories=categories) is not None else (type(expression).__name__,)
+        except (TypeError,ValueError,AttributeError) as error:
+            return (f'{type(expression).__name__}: {error}',)
+    from .annotations import children
+    supported=(ColumnRef,ConstExpr,RollingOp,ShiftOp,WhereOp,CompositeExpr,
+               GroupByScopeOp,CrossSectionalExpr,BarSinceExpr,SignalAlign,TermStructureExpr)
+    blockers=[];seen=set()
+    def visit(node):
+        if id(node) in seen:return
+        seen.add(id(node))
+        if not isinstance(node,supported) or isinstance(node,BarDistanceExpr):
+            blockers.append(type(node).__name__);return
+        for child in children(node):
+            if type(child).__name__ not in {'GroupByScopeExpr'}:visit(child)
     visit(expression)
     return tuple(dict.fromkeys(blockers))
+
+
+NODE_CHILD_FIELDS = ('child','left','right','condition','when_true','when_false',
+                     'boundary','trunc_start_child','trunc_end_child')
+
+
+def scope_plan_outputs(spec, requests, products):
+    """Share product-local ancestors; specialize cross barriers by frozen universe.
+
+    Requests contain (old output slot, active product indices). Static DAG rewrite
+    only: existing Rust product/where/cross nodes own all per-frame computation.
+    """
+    import json
+    nodes=[];by_key={};memo={}
+    def emit(node):
+        key=json.dumps(node,sort_keys=True,separators=(',',':'),allow_nan=False)
+        if key not in by_key:
+            by_key[key]=len(nodes);nodes.append(node)
+        return by_key[key]
+    def visit(old,active):
+        key=(old,active)
+        if key in memo:return memo[key]
+        node=dict(spec['nodes'][old])
+        for field in NODE_CHILD_FIELDS:
+            if node.get(field) is not None:node[field]=visit(node[field],active)
+        if node['kind']=='cross' and len(active)!=products:
+            mask=emit(dict(kind='product',values=[float(i in active) for i in range(products)]))
+            zero=emit(dict(kind='const',value=0.0))
+            missing=emit(dict(kind='binary',op='div',left=zero,right=zero))
+            node['child']=emit(dict(kind='where',condition=mask,when_true=node['child'],when_false=missing))
+        value=emit(node);memo[key]=value;return value
+    outputs=[];slots=[]
+    for slot,scope in requests:
+        active=tuple(sorted(scope))
+        if not active or len(set(active))!=len(active) or active[0]<0 or active[-1]>=products:
+            raise ValueError('invalid factor product universe')
+        value=visit(spec['outputs'][slot],active)
+        if value not in outputs:outputs.append(value)
+        slots.append(outputs.index(value))
+    result={**spec,'nodes':nodes,'outputs':outputs,'keys':[json.dumps(x,sort_keys=True) for x in nodes]}
+    result.pop('intermediates',None)
+    return result,slots
