@@ -10,9 +10,8 @@ from .core import FactorExpr
 class CategoryBoolRef(FactorExpr):
     """Boolean panel: product belongs to ``category[label]``.
 
-    This is a public-API leaf; the Rust plan currently reports it as an
-    explicit blocker because category membership needs the plan's product
-    universe at compile time.
+    Memberships are effective-time snapshots (including removals), frozen for
+    the Plan product universe; all execution entries share the Rust cursor.
     """
 
     def __init__(self, category=None, label: str | None = None):
@@ -31,27 +30,31 @@ class CategoryBoolRef(FactorExpr):
             self.label,
         )
 
-    def evaluate(self, ctx) -> pd.DataFrame:
-        index = next(iter(ctx.preloaded.values())).index if ctx.preloaded else pd.RangeIndex(0)
-        frame = pd.DataFrame(index=index, columns=tuple(ctx.products), dtype=bool)
-        memberships = getattr(ctx, "categories", None)
-        timestamps = index.as_unit("ns").asi8 if isinstance(index, pd.DatetimeIndex) else None
-        for product in ctx.products:
-            if memberships is not None:
-                membership = memberships.get(product) or memberships.get(str(product))
-                if isinstance(membership, (tuple, list)):
-                    for row, timestamp in enumerate(timestamps if timestamps is not None else [None] * len(index)):
-                        active = [item for item in membership if getattr(item, "active_at", lambda _: True)(timestamp)]
-                        labels = frozenset().union(*(item.labels for item in active)) if active else frozenset()
-                        frame.iloc[row, frame.columns.get_loc(product)] = self.label in labels
-                    continue
-                labels = getattr(membership, "labels", membership)
-                frame[product] = bool(labels) and self.label in labels
-            elif self.category is not None:
-                frame[product] = self.category.is_in_category(self.label, product)
-            else:
-                raise ValueError("CategoryBoolRef needs ctx.categories or a category object")
-        return frame
+    # Evaluation inherits the common Rust Plan entry.
 
-    def _evaluate(self, ctx) -> pd.DataFrame:
-        return self.evaluate(ctx)
+
+def category_node(expression, products, categories):
+    """Freeze latest-snapshot changes once; runtime membership is Rust-owned."""
+    changes=[]
+    for index,product in enumerate(products):
+        if categories is None:
+            if expression.category is None:
+                raise ValueError('CategoryBoolRef needs categories or a category object')
+            changes.append([index,-(2**63),int(expression.category.is_in_category(expression.label,product))])
+            continue
+        entry=categories.get(product,categories.get(str(product)))
+        entries=entry if isinstance(entry,(tuple,list)) and all(hasattr(x,"labels") for x in entry) else (entry,)
+        snapshots={}
+        for item in entries:
+            if item is None:continue
+            labels=getattr(item,'labels',item)
+            effective=getattr(item,'effective_at_ns',None)
+            at=-(2**63) if effective is None else int(effective)
+            member=int(expression.label in labels)
+            if at in snapshots and snapshots[at]!=member:
+                raise ValueError('conflicting category snapshots at the same effective time')
+            snapshots[at]=member
+        previous=None
+        for at,member in sorted(snapshots.items()):
+            if member!=previous:changes.append([index,at,member]);previous=member
+    return {'kind':'category','memberships':changes}

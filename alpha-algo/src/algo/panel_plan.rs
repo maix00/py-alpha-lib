@@ -8,7 +8,7 @@ use std::{borrow::Cow, collections::{HashMap, VecDeque}};
 use rayon::prelude::*;
 
 struct Grid { times: Vec<i64>, days: Vec<i64>, observed: Vec<u8> }
-struct Node { op: String, children: Vec<usize>, params: Vec<f64>, indices: Vec<i64>, grid: usize }
+struct Node { op: String, children: Vec<usize>, params: Vec<f64>, indices: Vec<i64>, grid: usize, kernel: Option<String> }
 enum Data<'a> { Scalar(f64), Product(Vec<f64>), Panel(Cow<'a, [f64]>) }
 struct Value<'a> { data: Data<'a>, rows: usize, width: usize }
 impl Value<'_> {
@@ -79,9 +79,31 @@ impl PanelPlan {
         if op == "bar_count" && (!children.is_empty() || indices.len() != 2 || indices[0] > indices[1]) {
             return Err(error("bar_count requires ordered inclusive bounds and no children"));
         }
-        self.nodes.push(Node {op,children,params,indices,grid}); Ok(self.nodes.len()-1)
+        self.nodes.push(Node {op,children,params,indices,grid,kernel:None}); Ok(self.nodes.len()-1)
+    }
+    /// Reuse an existing incremental kernel as a matrix node, without Python
+    /// callbacks or a second mathematical implementation. One bounded state per lane.
+    pub fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize) -> Result<usize> {
+        if grid>=self.grids.len() || children.len()>1 || children.iter().any(|&c|c>=self.nodes.len()) {
+            return Err(error("invalid shared kernel input"));
+        }
+        // Validate topology/configuration once before matrix execution.
+        let kernel=crate::algo::FactorPlanKernel::from_spec_json(&json,products)?;
+        if kernel.output_count()!=1 || kernel.input_fields()>1 || kernel.boundary_channels()!=0 || kernel.curve_channels()!=0
+            || (children.is_empty() && kernel.input_fields()!=0) {
+            return Err(error("matrix kernel requires one output and at most one child column"));
+        }
+        self.nodes.push(Node {op:"kernel".into(),children,params:vec![],indices:vec![],grid,kernel:Some(json)});
+        Ok(self.nodes.len()-1)
     }
     pub fn asof_indices(source: &[i64], target: &[i64]) -> Result<Vec<i64>> {
+        if source.windows(2).all(|w|w[0]<=w[1]) && target.windows(2).all(|w|w[0]<=w[1]) {
+            let mut cursor=0;
+            return Ok(target.iter().map(|&time|{
+                while cursor<source.len() && source[cursor]<=time {cursor+=1;}
+                if cursor==0 {-1} else {(cursor-1) as i64}
+            }).collect());
+        }
         let mut order:Vec<(i64,usize)>=source.iter().copied().enumerate().map(|(i,t)|(t,i)).collect();
         if source.windows(2).any(|w|w[0]>w[1]) { order.sort_by_key(|&(t,i)|(t,i)); }
         if target.windows(2).all(|w|w[0]<=w[1]) {
@@ -186,6 +208,7 @@ impl PanelPlan {
             let p=&node.params;
             let input=|index:usize|inputs.get(index).copied().ok_or_else(||error("input column out of range"));
             let value=match node.op.as_str() {
+                "kernel"=>self.shared_kernel(&args,node,grid,products,rows)?,
                 "column"=> {let data=input(p[0] as usize)?;if data.len()!=rows*products{return Err(error("column matrix shape mismatch"));}Value{data:Data::Panel(Cow::Borrowed(data)),rows,width:products}},
                 "const"=>Value{data:Data::Scalar(p[0]),rows,width:0},
                 "product"=>{if p.len()!=products{return Err(error("product constant shape mismatch"));}Value{data:Data::Product(p.clone()),rows,width:products}},
@@ -239,6 +262,33 @@ impl PanelPlan {
         Ok(out)
     }
 
+    fn shared_kernel(&self,args:&[&Value<'_>],node:&Node,grid:&Grid,products:usize,rows:usize)->Result<Value<'static>> {
+        let json=node.kernel.as_ref().ok_or_else(||error("missing kernel spec"))?;
+        let mut out=vec![f64::NAN;rows*products];
+        if args.is_empty() {
+            let mut kernel=crate::algo::FactorPlanKernel::from_spec_json(json,products)?;
+            let mut result=Vec::with_capacity(products);
+            let dummy=vec![0.0;products];
+            for row in 0..rows {
+                kernel.update_into(grid.times[row],&dummy,&mut result)?;
+                for product in 0..products {
+                    if grid.observed[product*rows+row]!=0 {out[product*rows+row]=result[product];}
+                }
+            }
+        } else {
+            out.par_chunks_mut(rows.max(1)).enumerate().try_for_each(|(product,chunk)|->Result<()>{
+                let mut kernel=crate::algo::FactorPlanKernel::from_spec_json(json,1)?;
+                let mut result=Vec::with_capacity(1);
+                for row in 0..rows {
+                    if grid.observed[product*rows+row]==0 {continue;}
+                    kernel.update_into(grid.times[row],&[args[0].at(product,row)],&mut result)?;
+                    chunk[row]=result[0];
+                }
+                Ok(())
+            })?;
+        }
+        Ok(Value{data:Data::Panel(Cow::Owned(out)),rows,width:products})
+    }
     fn temporal(&self,args:&[&Value<'_>],node:&Node,grid:&Grid,products:usize,rows:usize)->Result<Value<'static>> {
         let p=&node.params;let scope=node.op.starts_with("scope:");let op=node.op.split_once(':').unwrap().1;
         let width=args[0].width.max(1);let mut out=vec![f64::NAN;rows*width];

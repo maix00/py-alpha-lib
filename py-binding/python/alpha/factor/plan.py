@@ -131,7 +131,7 @@ class _Builder:
             partitions,interval,
             expr.basepoint=='first',expr.include_current,expr.partial=='emit')
         times=np.asarray(targets,dtype=np.int64)
-        index=pd.to_datetime(times,utc=True)
+        index=pd.DatetimeIndex(times.view("datetime64[ns]"),tz="UTC")
         index=index.tz_localize(None) if self.base.index.tz is None else index.tz_convert(self.base.index.tz)
         positions=np.asarray(self.plan.asof_indices(self.base.times,times),dtype=np.int64)
         observed=(np.asarray(mapping).reshape(len(self.products),len(times))>=0).astype(np.uint8)
@@ -177,6 +177,15 @@ class _Builder:
         return self.add('term',params=[expr.near_rank,expr.far_rank,expr.depth,TERM_OPS.index(expr.op)],
                         indices=self.term_inputs[key])
 
+    def kernel(self, node, child=None):
+        import json
+        grid=self.base if child is None else child.grid
+        nodes=[] if child is None else [dict(kind='column',index=0)]
+        nodes.append(node)
+        payload=json.dumps(dict(nodes=nodes,outputs=[len(nodes)-1]),allow_nan=False)
+        identifier=self.plan.add_kernel(payload,[] if child is None else [child.id],grid.id,len(self.products))
+        return _Ref(identifier,grid,self.products if child is None else child.columns)
+
     def build(self, expr) -> _Ref:
         key = expr._structural_key()
         if key in self.memo:
@@ -186,11 +195,20 @@ class _Builder:
         from .scope import GroupByScopeOp
         from .scopes import TradingDayScope, SessionScope
         from .bar_search import BarSinceExpr
+        from .match import MatchBarDistanceExpr, _predicate
+        from .category import CategoryBoolRef,category_node
 
         from .signal import SignalAlign
         from .term import TermStructureExpr
 
-        if isinstance(expr,SignalAlign):
+        if isinstance(expr,CategoryBoolRef):
+            ref=self.kernel(category_node(expr,self.products,self.ctx.categories))
+        elif isinstance(expr,MatchBarDistanceExpr):
+            child=self.build(expr.value)
+            ref=self.kernel(dict(kind='match_distance',child=0,predicate=_predicate(expr.condition),
+                count=expr.scope.count,nearest=expr.select=='nearest',default=None if np.isnan(expr.default) else expr.default,
+                include_current=expr.include_current),child)
+        elif isinstance(expr,SignalAlign):
             ref=self.signal(expr)
         elif isinstance(expr,TermStructureExpr):
             ref=self.term(expr)
@@ -248,13 +266,9 @@ class _Builder:
             )
         elif isinstance(expr, BarSinceExpr):
             child = self.build(expr.condition)
-            ref = self.add(
-                "since", [child],
-                [1, expr.scope.count, 0, float(expr.include_current),
-                 float(expr.select == "nearest"), float(expr.default is None),
-                 0.0 if expr.default is None else float(expr.default), 1.0],
-                columns=child.columns, grid=child.grid,
-            )
+            ref=self.kernel(dict(kind='since',condition=0,count=expr.scope.count,
+                include_current=expr.include_current,nearest=expr.select=='nearest',
+                default_scope=expr.default is None,default=0.0 if expr.default is None else float(expr.default)),child)
         elif isinstance(expr, CompositeExpr):
             children = [self.build(item) for item in expr.operands]
             ref = self.point(expr.op,children)

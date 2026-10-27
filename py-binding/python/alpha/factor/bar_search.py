@@ -13,6 +13,7 @@ class BarSinceExpr(FactorExpr):
     def __init__(self, condition: FactorExpr, scope: BarCountScope, *,
                  select: str = "nearest", default: float | None = None,
                  include_current: bool = True):
+        if select not in {"nearest","farthest"}:raise ValueError("select must be nearest or farthest")
         self.condition = condition
         self.scope = scope
         self.select = select
@@ -24,18 +25,6 @@ class BarSinceExpr(FactorExpr):
                 self.include_current, self.default,
                 self.condition._structural_key())
 
-    def _evaluate(self, ctx) -> pd.DataFrame:
-        frame = self.condition.evaluate(ctx)
-        from alpha import bar_since
-        output = {}
-        for product in frame.columns:
-            values = frame[product].to_numpy(dtype=float)
-            output[product] = bar_since(
-                values, self.scope.count, self.include_current,
-                self.select == "nearest", self.default is None,
-                0.0 if self.default is None else float(self.default),
-            )
-        return pd.DataFrame(output, index=frame.index)
 
 
 class BarDistanceExpr(BarSinceExpr):

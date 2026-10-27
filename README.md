@@ -310,3 +310,17 @@ universe while sharing product-local ancestors. Existing Rust product/where/
 cross nodes perform the work; no second rolling state is added for each strategy
 when its input and time semantics are the same. Different universes require
 different cross outputs even if they reference the same immutable factor.
+
+
+Public matrix Category, boolean event-age and CURRENT/CANDIDATE BarDistance nodes
+reuse `FactorPlanKernel` through `PanelPlan.add_kernel`; the matrix adapter only
+feeds observed product lanes and scatters output. There is no Python window or
+predicate execution fallback. CategoryMembership records are complete snapshots
+effective at their timestamp, including label removal, not accumulating deltas;
+conflicting snapshots at the same time fail before execution. Category state
+consumes each frozen transition once and holds only the current product mask.
+`select="farthest"` includes the current bar only when no earlier match wins;
+`select="nearest"` may return zero. A NaN default is transported as JSON null.
+The legacy boolean BarDistanceExpr is event age; use `bar_distance(value,
+CURRENT/CANDIDATE predicate, ...)` for current-versus-history search. Predicate
+NaN is not truthy. Evaluation timestamps cannot move backwards.

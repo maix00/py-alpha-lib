@@ -73,7 +73,7 @@ where
     let mut matched: Option<u64> = None;
     for (ordinal, value) in candidates {
         if ordinal < start || ordinal >= current_ordinal { continue; }
-        if predicate.eval(current, value) != 0.0 {
+        if matches!(predicate.eval(current,value), v if v.is_finite() && v!=0.0) {
             matched = Some(match matched {
                 None => ordinal,
                 Some(previous) if nearest => previous.max(ordinal),
@@ -100,13 +100,13 @@ pub fn match_distance_deque(
     if nearest {
         for &(ordinal, value) in candidates.iter().rev() {
             if ordinal < start || ordinal >= current_ordinal { if ordinal < start { break; } else { continue; } }
-            if predicate.eval(current, value) != 0.0 { return (current_ordinal - ordinal) as f64; }
+            if matches!(predicate.eval(current,value), v if v.is_finite() && v!=0.0) { return (current_ordinal - ordinal) as f64; }
         }
     } else {
         for &(ordinal, value) in candidates {
             if ordinal < start { continue; }
             if ordinal >= current_ordinal { break; }
-            if predicate.eval(current, value) != 0.0 { return (current_ordinal - ordinal) as f64; }
+            if matches!(predicate.eval(current,value), v if v.is_finite() && v!=0.0) { return (current_ordinal - ordinal) as f64; }
         }
     }
     default

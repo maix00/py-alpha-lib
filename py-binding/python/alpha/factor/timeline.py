@@ -17,7 +17,7 @@ def union_index(frames):
     index = None
     for frame in frames:
         index = frame.index if index is None else index.union(frame.index)
-    return pd.Index([]) if index is None else index.sort_values()
+    return pd.Index([]) if index is None else index if index.is_monotonic_increasing else index.sort_values()
 
 
 def same_observed_slots(observed):
@@ -105,7 +105,7 @@ def build_timeline(products, preloaded, trading_days=None, *, frequency=None, da
     observed = np.zeros((len(products), len(index)), dtype=np.uint8)
     for position, product in enumerate(products):
         if product in frames:
-            observed[position] = index.isin(frames[product].index)
+            observed[position] = 1 if index.equals(frames[product].index) else index.isin(frames[product].index)
     return from_observed(index, products, trading_days, observed,
                          times=None if time_resolver is None else time_resolver(index))
 

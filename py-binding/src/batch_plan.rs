@@ -22,6 +22,10 @@ impl BatchPlan {
         Ok(self.inner.add(op, children, params, indices, grid)?)
     }
 
+    fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize) -> PyResult<usize> {
+        Ok(self.inner.add_kernel(json,children,grid,products)?)
+    }
+
     #[staticmethod]
     fn asof_indices(source: PyReadonlyArray1<i64>, target: PyReadonlyArray1<i64>) -> PyResult<Vec<i64>> {
         Ok(alpha_algo::PanelPlan::asof_indices(source.as_slice()?, target.as_slice()?)?)

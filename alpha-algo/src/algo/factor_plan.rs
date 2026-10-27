@@ -161,6 +161,8 @@ struct NodeState {
     signal_prev: Vec<f64>,
     scope_session: Option<usize>,
     cross_scratch: Vec<(usize, f64)>,
+    category_cursor: usize,
+    category_values: Vec<f64>,
 }
 
 pub struct FactorPlanKernel {
@@ -208,7 +210,13 @@ impl FactorPlanKernel {
             ExprSpec::Term { column, .. } => Some(column + 1), _ => None,
         }).max().unwrap_or(0);
         let mut nodes = Vec::with_capacity(specs.len());
-        for spec in specs {
+        for mut spec in specs {
+            if let ExprSpec::Category { memberships } = &mut spec {
+                if memberships.iter().any(|(product,_,_)|*product>=products) {
+                    return Err(crate::algo::Error::InvalidParameter("category product out of range".into()));
+                }
+                memberships.sort_by_key(|(_,at,_)|*at);
+            }
             let session_window = match &spec {
                 ExprSpec::SessionRolling { sessions, lookback_sessions, .. } => {
                     Some(SessionWindow::new(sessions, *lookback_sessions)?)
@@ -263,6 +271,7 @@ impl FactorPlanKernel {
             let since_state = matches!(&spec, ExprSpec::Since { .. } | ExprSpec::Distance { .. });
             let signal_state = matches!(&spec, ExprSpec::Signal { .. });
             let scope_state = matches!(&spec, ExprSpec::Scope { .. } | ExprSpec::SessionReset { .. });
+            let category_values=if matches!(&spec,ExprSpec::Category{..}) {vec![0.0;products]} else {vec![]};
             nodes.push(NodeState {
                 spec: Arc::new(spec), rolling, ema, linreg,
                 trunc_history,
@@ -283,6 +292,7 @@ impl FactorPlanKernel {
                 signal_prev: if signal_state { vec![f64::NAN; products] } else { Vec::new() },
                 scope_session: None,
                 cross_scratch: Vec::new(),
+                category_cursor:0,category_values,
             });
         }
         if outputs.iter().any(|index| *index >= nodes.len()) {
@@ -366,6 +376,9 @@ impl FactorPlanKernel {
         if boundaries.len() / self.products < self.boundary_channels {
             return Err(crate::algo::Error::InvalidParameter("missing boundary channel".into()));
         }
+        if self.ordinal>0 && timestamp_ns<self.timestamp_ns {
+            return Err(crate::algo::Error::InvalidParameter("factor timestamps must not move backwards".into()));
+        }
         self.timestamp_ns = timestamp_ns;
         if self.products == 0 || values.is_empty() || values.len() % self.products != 0 {
             return Err(crate::algo::Error::InvalidParameter("plan values must be product-major fields".into()));
@@ -405,13 +418,15 @@ impl FactorPlanKernel {
                     }
                 }
                 ExprSpec::Category { memberships } => {
-                    for product in 0..products {
-                        out[product] = memberships.iter()
-                            .filter(|(index, at, _)| *index == product && *at <= timestamp_ns)
-                            .max_by_key(|(_, at, _)| *at)
-                            .map_or(0.0, |(_, _, member)| if *member { 1.0 } else { 0.0 });
+                    let node=&mut self.nodes[index];
+                    while node.category_cursor<memberships.len() && memberships[node.category_cursor].1<=timestamp_ns {
+                        let (product,_,member)=memberships[node.category_cursor];
+                        node.category_values[product]=f64::from(member);
+                        node.category_cursor+=1;
                     }
+                    out.copy_from_slice(&node.category_values);
                 }
+
                 ExprSpec::BarCount { start_ns, end_ns } => {
                     let node = &mut self.nodes[index];
                     if node.count_timestamp.is_some_and(|last| timestamp_ns <= last) {
@@ -526,9 +541,12 @@ impl FactorPlanKernel {
                         let current_value = input[product];
                         let mut value = crate::algo::match_distance_deque(
                             current, current_value, &node.match_history[product],
-                            predicate, *count as u64, *nearest, *default,
+                            predicate, *count as u64, *nearest, f64::NAN,
                         );
-                        if *include_current && predicate.eval(current_value, current_value) != 0.0 { value = 0.0; }
+                        let self_match=predicate.eval(current_value,current_value);
+                        if *include_current && self_match.is_finite() && self_match!=0.0
+                            && (*nearest || value.is_nan()) {value=0.0;}
+                        if value.is_nan() {value=*default;}
                         out[product] = value;
                         let history = &mut node.match_history[product];
                         history.push_back((current, current_value));
@@ -848,7 +866,7 @@ enum RawNode {
                      min_periods: usize, propagate_nan: bool },
     Term { op: String, near_rank: usize, far_rank: usize, depth: usize, #[serde(default)] column: usize },
     MatchDistance { child: usize, predicate: RawMatch, count: usize, nearest: bool,
-                    default: f64, #[serde(default = "default_include_current")] include_current: bool },
+                    default: Option<f64>, #[serde(default = "default_include_current")] include_current: bool },
     Binary { op: String, left: usize, right: usize },
     Neg { child: usize },
     Unary { op: String, child: usize },
@@ -899,7 +917,7 @@ impl FactorPlanKernel {
                 RawNode::Term { op, near_rank, far_rank, depth, column } =>
                     ExprSpec::Term { op, near_rank, far_rank, depth, column },
                 RawNode::MatchDistance { child, predicate, count, nearest, default, include_current } =>
-                    ExprSpec::MatchDistance { child, predicate: compile_match(predicate), count, nearest, default, include_current },
+                    ExprSpec::MatchDistance { child, predicate: compile_match(predicate), count, nearest, default:default.unwrap_or(f64::NAN), include_current },
                 RawNode::RollingDynamic { child, windows, op, min_periods, propagate_nan } =>
                     ExprSpec::RollingDynamic { child, windows, op: session_op(&op, None)?, min_periods, propagate_nan },
                 RawNode::SessionReset { child, boundary, op, min_periods, propagate_nan } =>

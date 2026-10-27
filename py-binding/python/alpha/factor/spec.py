@@ -37,26 +37,8 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
         elif isinstance(expr, CategoryBoolRef):
             if products is None:
                 return None
-            if categories is not None:
-                memberships = []
-                for index, product in enumerate(products):
-                    entries = categories.get(product) or categories.get(str(product))
-                    if isinstance(entries, (tuple, list)):
-                        changed = None
-                        for item in sorted(entries, key=lambda entry: entry.effective_at_ns or 0):
-                            member = expr.label in item.labels
-                            if member != changed:
-                                memberships.append([index, int(item.effective_at_ns or 0), int(member)])
-                                changed = member
-                    elif entries is not None:
-                        labels = getattr(entries, "labels", entries)
-                        memberships.append([index, 0, int(expr.label in labels)])
-                node = {"kind": "category", "memberships": memberships}
-            else:
-                node = {"kind": "product", "values": [
-                    1.0 if expr.category.is_in_category(expr.label, product) else 0.0
-                    for product in products
-                ]}
+            from .category import category_node
+            node=category_node(expr,products,categories)
         elif isinstance(expr, ColumnRef):
             if expr.column not in columns:
                 columns.append(expr.column)
@@ -168,12 +150,8 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
                 "kind": "match_distance", "child": child,
                 "predicate": _predicate(expr.condition),
                 "count": expr.scope.count, "nearest": expr.select == "nearest",
-                "default": expr.default, "include_current": expr.include_current,
+                "default": None if np.isnan(expr.default) else expr.default, "include_current": expr.include_current,
             }
-        elif isinstance(expr, BarDistanceExpr):
-            # The original bar_distance compares CURRENT against historical
-            # CANDIDATE values; a boolean condition is not the same operator.
-            return None
         elif isinstance(expr, BarSince):
             child = build(expr.condition)
             if child is None:
@@ -208,13 +186,18 @@ def plan_blockers(expression: Any, *, execution="batch", products=None, categori
             return (f'{type(expression).__name__}: {error}',)
     from .annotations import children
     supported=(ColumnRef,ConstExpr,RollingOp,ShiftOp,WhereOp,CompositeExpr,
-               GroupByScopeOp,CrossSectionalExpr,BarSinceExpr,SignalAlign,TermStructureExpr)
+               GroupByScopeOp,CrossSectionalExpr,BarSinceExpr,MatchBarDistanceExpr,
+               CategoryBoolRef,SignalAlign,TermStructureExpr)
     blockers=[];seen=set()
     def visit(node):
         if id(node) in seen:return
         seen.add(id(node))
-        if not isinstance(node,supported) or isinstance(node,BarDistanceExpr):
+        if not isinstance(node,supported):
             blockers.append(type(node).__name__);return
+        if isinstance(node,MatchBarDistanceExpr):
+            try:_predicate(node.condition)
+            except TypeError as error:blockers.append(str(error));return
+            visit(node.value);return
         for child in children(node):
             if type(child).__name__ not in {'GroupByScopeExpr'}:visit(child)
     visit(expression)
