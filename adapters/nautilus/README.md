@@ -44,3 +44,11 @@ Separate causal clocks or account/order state must not be incorrectly merged.
 Session boundaries require the frozen calendar or authoritative custom events.
 Sparse clock/curve support and end-to-end deployment are separate acceptance
 items; this move does not relax the existing explicit failures.
+
+Native consumers accept an optional frozen `product_indices` scope. They share
+one factor publication/ranking, filter the ranking through a preallocated buffer
+and never trade instruments outside that scope. Product-local factor ancestors
+can be shared across scopes; cross-sectional ancestors must be specialized by
+universe via alpha's plan compiler before installing the runtime. A host must
+honor Nautilus OMS/account semantics: independent overlapping target strategies
+require hedging positions rather than inventing per-strategy netting balances.

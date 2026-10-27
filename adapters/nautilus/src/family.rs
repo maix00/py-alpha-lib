@@ -121,6 +121,8 @@ impl FamilyRule {
 pub struct ConsumerSpec {
     pub strategy_id: String,
     pub signal_output: usize,
+    #[serde(default)]
+    pub product_indices: Option<Vec<usize>>,
     pub rule: FamilyRule,
 }
 
@@ -133,6 +135,8 @@ pub struct FamilyStrategy {
     topic: String,
     handler: Option<ShareableMessageHandler>,
     targets: Vec<i8>,
+    active: Vec<bool>,
+    eligible_ranking: Vec<usize>,
     pub publications: Arc<AtomicUsize>,
     error: Arc<Mutex<Option<String>>>,
 }
@@ -175,6 +179,14 @@ impl FamilyStrategy {
             ..Default::default()
         })?;
         let count = instruments.len();
+        let mut active=vec![spec.product_indices.is_none();count];
+        if let Some(indices)=&spec.product_indices {
+            anyhow::ensure!(!indices.is_empty(),"empty strategy product scope");
+            for &index in indices {
+                anyhow::ensure!(index<count && !active[index],"invalid or duplicate strategy product index");
+                active[index]=true;
+            }
+        }
         Ok(Self {
             core,
             spec,
@@ -183,6 +195,8 @@ impl FamilyStrategy {
             topic,
             handler: None,
             targets: vec![0; count],
+            active,
+            eligible_ranking:Vec::with_capacity(count),
             publications: Arc::new(AtomicUsize::new(0)),
             error,
         })
@@ -206,9 +220,9 @@ impl FamilyStrategy {
                 .get(&self.spec.signal_output)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            self.spec
-                .rule
-                .fill_targets(values, ranking, &mut self.targets);
+            self.eligible_ranking.clear();
+            self.eligible_ranking.extend(ranking.iter().copied().filter(|&i|self.active[i]));
+            self.spec.rule.fill_targets(values,&self.eligible_ranking,&mut self.targets);
         }
         self.publications.fetch_add(1, Ordering::Relaxed);
         let strategy_id = self
@@ -216,6 +230,7 @@ impl FamilyStrategy {
             .strategy_id()
             .ok_or_else(|| anyhow::anyhow!("strategy unregistered"))?;
         for index in 0..count {
+            if !self.active[index] {continue;}
             let instrument_id = self.instruments[index];
             let delta = {
                 let cache = self.cache_ref();
