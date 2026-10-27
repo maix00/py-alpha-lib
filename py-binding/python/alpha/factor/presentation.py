@@ -85,8 +85,9 @@ def _native_fields(expr):
     elif kind == 'GroupByScopeOp':
         fields={'scope':expr.owner.scope,'trunc_start':None,'trunc_end':None}
     elif kind == 'BarCountScope':
-        count=SimpleNamespace(value=expr.count,_structural_key=lambda: ('count',expr.count))
-        count._presentation_fields=lambda: ('ConstExpr', {'value':expr.count})
+        count_value = getattr(expr.count, 'value', expr.count)
+        count=SimpleNamespace(value=count_value,_structural_key=lambda: ('count',count_value))
+        count._presentation_fields=lambda: ('ConstExpr', {'value':count_value})
         fields={'count':count}
     elif kind in {'BarSinceExpr','BarDistanceExpr','MatchBarDistanceExpr'}:
         kind='BarSinceOp' if kind=='BarSinceExpr' else 'BarDistanceOp'
