@@ -3,7 +3,7 @@
 //! Product-major matrix DAG.
 //! Leaves borrow NumPy; last-use releases intermediates.
 type Result<T> = std::result::Result<T, crate::algo::Error>;
-use std::{borrow::Cow, collections::{HashMap, VecDeque}};
+use std::{borrow::Cow, collections::HashMap};
 
 use rayon::prelude::*;
 
@@ -28,11 +28,11 @@ impl Value<'_> {
     }
 }
 fn error(message: impl Into<String>) -> crate::algo::Error { crate::algo::Error::InvalidParameter(message.into()) }
-fn unary(op: &str, x: f64) -> f64 {
+pub(crate) fn unary(op: &str, x: f64) -> f64 {
     match op { "neg" => -x, "abs" => x.abs(), "sign" => if x == 0.0 { 0.0 } else { x.signum() },
         "sqrt" => x.sqrt(), "log" => x.ln(), "tanh" => x.tanh(), "not" => f64::from(x == 0.0), _ => f64::NAN }
 }
-fn binary(op: &str, x: f64, y: f64) -> f64 {
+pub(crate) fn binary(op: &str, x: f64, y: f64) -> f64 {
     match op { "add" => x+y, "sub" => x-y, "mul" => x*y, "div" => x/y, "pow" => x.powf(y),
         "max" => if x.is_nan() || y.is_nan() { f64::NAN } else { x.max(y) },
         "min" => if x.is_nan() || y.is_nan() { f64::NAN } else { x.min(y) },
@@ -72,7 +72,7 @@ impl PanelPlan {
     }
     pub fn add(&mut self, op: String, children: Vec<usize>, params: Vec<f64>, indices: Vec<i64>, grid: usize) -> Result<usize> {
         if grid>=self.grids.len() || children.iter().any(|&c|c>=self.nodes.len()) { return Err(error("invalid grid or non-topological child")); }
-        let valid=matches!(op.as_str(),"column"|"const"|"product"|"bar_count"|"reindex"|"where"|"shift"|"since"|"distance"|"term"|
+        let valid=matches!(op.as_str(),"column"|"const"|"product"|"bar_count"|"reindex"|"where"|"shift"|"term"|
             "neg"|"abs"|"sign"|"sqrt"|"log"|"tanh"|"not"|"add"|"sub"|"mul"|"div"|"pow"|"max"|"min"|
             "gt"|"lt"|"ge"|"le"|"eq"|"ne"|"and"|"or") || op.starts_with("rolling:") || op.starts_with("scope:") || op.starts_with("cross:") || op.starts_with("session_rolling:");
         if !valid { return Err(error(format!("unknown plan operation {op}"))); }
@@ -83,17 +83,17 @@ impl PanelPlan {
     }
     /// Reuse an existing incremental kernel as a matrix node, without Python
     /// callbacks or a second mathematical implementation. One bounded state per lane.
-    pub fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize) -> Result<usize> {
-        if grid>=self.grids.len() || children.len()>1 || children.iter().any(|&c|c>=self.nodes.len()) {
+    pub fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize, reset_by_day:bool) -> Result<usize> {
+        if grid>=self.grids.len() || children.iter().any(|&c|c>=self.nodes.len()) {
             return Err(error("invalid shared kernel input"));
         }
         // Validate topology/configuration once before matrix execution.
         let kernel=crate::algo::FactorPlanKernel::from_spec_json(&json,products)?;
-        if kernel.output_count()!=1 || kernel.input_fields()>1 || kernel.boundary_channels()!=0 || kernel.curve_channels()!=0
+        if kernel.output_count()!=1 || kernel.input_fields()>children.len() || kernel.boundary_channels()>usize::from(reset_by_day) || kernel.curve_channels()!=0
             || (children.is_empty() && kernel.input_fields()!=0) {
             return Err(error("matrix kernel requires one output and at most one child column"));
         }
-        self.nodes.push(Node {op:"kernel".into(),children,params:vec![],indices:vec![],grid,kernel:Some(json)});
+        self.nodes.push(Node {op:"kernel".into(),children,params:vec![],indices:vec![i64::from(reset_by_day)],grid,kernel:Some(json)});
         Ok(self.nodes.len()-1)
     }
     pub fn asof_indices(source: &[i64], target: &[i64]) -> Result<Vec<i64>> {
@@ -245,7 +245,6 @@ impl PanelPlan {
                     let mut out=vec![f64::NAN;mapping.len()];for(i,&m)in mapping.iter().enumerate(){if m>=0.0{let j=m as usize;if j>=lengths.len(){return Err(error("curve mapping out of range"));}out[i]=curves[j*slots];}}owned(out,products)
                 },
                 op if op.starts_with("cross:")=>self.cross(&op[6..],&args,node,products,rows)?,
-                "since"|"distance"=>self.search(&args,node,grid,products,rows)?,
                 op if op.starts_with("rolling:")||op.starts_with("scope:")=>self.temporal(&args,node,grid,products,rows)?,
                 op if op.starts_with("session_rolling:")=>self.session_rolling(&op[16..],&args,node,grid,products,rows)?,
                 "shift"=> {let mut out=vec![f64::NAN;rows*width];let n=p[0]as usize;for g in 0..width {let observed:Vec<usize>=(0..rows).filter(|&r|width!=products||grid.observed[g*rows+r]!=0).collect();for i in n..observed.len(){out[g*rows+observed[i]]=args[0].at(g,observed[i-n]);}}owned(out,width)},
@@ -279,10 +278,13 @@ impl PanelPlan {
             out.par_chunks_mut(rows.max(1)).enumerate().try_for_each(|(product,chunk)|->Result<()>{
                 let mut kernel=crate::algo::FactorPlanKernel::from_spec_json(json,1)?;
                 let mut result=Vec::with_capacity(1);
+                let mut inputs=vec![0.0;args.len()];let mut previous=None;
                 for row in 0..rows {
                     if grid.observed[product*rows+row]==0 {continue;}
-                    kernel.update_into(grid.times[row],&[args[0].at(product,row)],&mut result)?;
-                    chunk[row]=result[0];
+                    for (slot,arg) in inputs.iter_mut().zip(args) {*slot=arg.at(product,row);}
+                    let boundary=u8::from(node.indices[0]!=0 && previous.is_none_or(|last|grid.days[last]!=grid.days[row]));
+                    kernel.update_into_context(grid.times[row],&inputs,&[boundary],&[],&mut result)?;
+                    previous=Some(row);chunk[row]=result[0];
                 }
                 Ok(())
             })?;
@@ -368,42 +370,6 @@ impl PanelPlan {
                 chunk[t]=state.update_explicit(start,ordinal,args[0].at(g,t));
                 ordinal += 1;
             } Ok(())
-        })?;Ok(Value{data:Data::Panel(Cow::Owned(out)),rows,width})
-    }
-    fn search(&self,args:&[&Value<'_>],node:&Node,grid:&Grid,products:usize,rows:usize)->Result<Value<'static>> {
-        let p=&node.params;let width=args[0].width.max(1);let distance=node.op=="distance";
-        let mut out=vec![f64::NAN;rows*width];
-        out.par_chunks_mut(rows.max(1)).enumerate().try_for_each(|(g,chunk)|->Result<()>{
-            let observed:Vec<usize>=(0..rows).filter(|&t|width!=products||grid.observed[g*rows+t]!=0).collect();
-            let mut base=0;let mut matches=VecDeque::new();let mut registers=vec![0.0;(p.len().saturating_sub(8))/5];
-            for (ordinal,&t) in observed.iter().enumerate(){
-                if boundary(p[0]as usize,p[1]as usize,p[2]as i64,ordinal,t,base,&observed,grid){base=ordinal;matches.clear();}
-                let fallback=if p[5]!=0.0{(ordinal-base)as f64}else{p[6]};
-                if !distance {
-                    let truth=args[0].at(g,t).is_finite()&&args[0].at(g,t)!=0.0;
-                    if truth&&p[3]!=0.0{matches.push_back(ordinal);}
-                    let hit=if p[4]!=0.0{matches.back()}else{matches.front()};
-                    chunk[t]=hit.map_or(fallback,|&h|(ordinal-h)as f64);
-                    if truth&&p[3]==0.0{matches.push_back(ordinal);}
-                    if p[7]!=0.0&&args[0].at(g,t).is_nan(){chunk[t]=f64::NAN;}
-                } else {
-                    chunk[t]=fallback;
-                    if !args[0].at(g,t).is_finite(){continue;}
-                    let nearest=p[4]!=0.0;
-                    for step in 0..ordinal-base {
-                        let h=if nearest{ordinal-1-step}else{base+step};let candidate=args[0].at(g,observed[h]);if !candidate.is_finite(){continue;}
-                        for(i,instruction)in p[8..].chunks_exact(5).enumerate(){
-                            let code=instruction[0]as usize;let a=instruction[1]as usize;let b=instruction[2]as usize;let c=instruction[3]as usize;
-                            registers[i]=match code{0=>args[0].at(g,t),1=>candidate,2=>instruction[4],3=>args[a].at(g,t),
-                                4=>if registers[a]!=0.0{registers[b]}else{registers[c]},
-                                10..=16=>unary(["neg","abs","sign","sqrt","log","tanh","not"][code-10],registers[a]),
-                                20..=36=>binary(["add","sub","mul","div","pow","max","min","gt","lt","ge","le","eq","ne","and","or","max","min"][code-20],registers[a],registers[b]),
-                                _=>return Err(error("invalid match predicate opcode"))};
-                        }
-                        if registers.last().is_some_and(|v|v.is_finite()&&*v!=0.0){chunk[t]=(ordinal-h)as f64;break;}
-                    }
-                }
-            }Ok(())
         })?;Ok(Value{data:Data::Panel(Cow::Owned(out)),rows,width})
     }
     fn cross(&self,op:&str,args:&[&Value<'_>],node:&Node,products:usize,rows:usize)->Result<Value<'static>> {

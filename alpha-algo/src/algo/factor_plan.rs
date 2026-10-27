@@ -31,7 +31,7 @@ pub enum ExprSpec {
     SessionReset { child: usize, boundary: usize, op: SessionOp, min_periods: usize, propagate_nan: bool },
     RollingDynamic { child: usize, windows: Vec<usize>, op: SessionOp, min_periods: usize, propagate_nan: bool },
     Term { op: String, near_rank: usize, far_rank: usize, depth: usize, column: usize },
-    MatchDistance { child: usize, predicate: crate::algo::MatchExpr, count: usize, nearest: bool, default: f64, include_current: bool },
+    Search { child:usize,dependencies:Vec<usize>,boundary:Option<usize>,predicate:Option<crate::algo::MatchExpr>,config:crate::algo::SearchConfig },
     SessionRolling { child: usize, lookback_sessions: usize, sessions: Vec<(i64, i64, usize)>, op: SessionOp, min_periods: usize, propagate_nan: bool },
     Linreg { child: usize, window: usize, op: String, min_periods: usize, propagate_nan: bool },
     Neg { child: usize },
@@ -147,7 +147,6 @@ struct NodeState {
     session_window: Option<SessionWindow>,
     ema: Vec<Option<crate::algo::EmaState>>,
     linreg: Vec<Option<LinearState>>,
-    match_history: Vec<VecDeque<(u64, f64)>>,
     history: VecDeque<Vec<f64>>,
     since_first: Vec<Option<usize>>,
     since_last: Vec<Option<usize>>,
@@ -161,6 +160,8 @@ struct NodeState {
     signal_prev: Vec<f64>,
     scope_session: Option<usize>,
     cross_scratch: Vec<(usize, f64)>,
+    searches:Vec<crate::algo::BarSearchState>,
+    search_inputs:Vec<f64>,
     category_cursor: usize,
     category_values: Vec<f64>,
 }
@@ -264,21 +265,18 @@ impl FactorPlanKernel {
                     (0..products).map(|_| VecDeque::with_capacity(window - 1 - *trunc_end as usize + 1)).collect(),
                 _ => Vec::new(),
             };
-            let match_history = match &spec {
-                ExprSpec::MatchDistance { .. } => (0..products).map(|_| VecDeque::new()).collect(),
-                _ => Vec::new(),
-            };
             let since_state = matches!(&spec, ExprSpec::Since { .. } | ExprSpec::Distance { .. });
             let signal_state = matches!(&spec, ExprSpec::Signal { .. });
             let scope_state = matches!(&spec, ExprSpec::Scope { .. } | ExprSpec::SessionReset { .. });
             let category_values=if matches!(&spec,ExprSpec::Category{..}) {vec![0.0;products]} else {vec![]};
+            let searches=if matches!(&spec,ExprSpec::Search{..}) {(0..products).map(|_|crate::algo::BarSearchState::default()).collect()} else {vec![]};
+            let search_inputs=if let ExprSpec::Search{dependencies,..}=&spec {vec![0.0;dependencies.len()]} else {vec![]};
             nodes.push(NodeState {
                 spec: Arc::new(spec), rolling, ema, linreg,
                 trunc_history,
                 trunc_delay,
                 interval_count: 0, count_timestamp: None,
                 session_window,
-                match_history,
                 history: VecDeque::new(),
                 since_first: if since_state { vec![None; products] } else { Vec::new() },
                 since_last: if since_state { vec![None; products] } else { Vec::new() },
@@ -292,7 +290,7 @@ impl FactorPlanKernel {
                 signal_prev: if signal_state { vec![f64::NAN; products] } else { Vec::new() },
                 scope_session: None,
                 cross_scratch: Vec::new(),
-                category_cursor:0,category_values,
+                category_cursor:0,category_values,searches,search_inputs,
             });
         }
         if outputs.iter().any(|index| *index >= nodes.len()) {
@@ -302,7 +300,7 @@ impl FactorPlanKernel {
             let children: &[usize] = match node.spec.as_ref() {
                 ExprSpec::Column(_) | ExprSpec::Const(_) | ExprSpec::Product(_) | ExprSpec::BarCount { .. } | ExprSpec::Boundary { .. } | ExprSpec::Category { .. } | ExprSpec::Term { .. } => &[],
                 ExprSpec::Neg { child } | ExprSpec::Unary { child, .. } | ExprSpec::Rolling { child, .. }
-                | ExprSpec::SessionRolling { child, .. } | ExprSpec::RollingDynamic { child, .. } | ExprSpec::MatchDistance { child, .. }
+                | ExprSpec::SessionRolling { child, .. } | ExprSpec::RollingDynamic { child, .. }
                 | ExprSpec::Ema { child, .. } | ExprSpec::Linreg { child, .. }
                 | ExprSpec::Shift { child, .. } | ExprSpec::Cross { child, .. }
                 | ExprSpec::Scope { child, .. } | ExprSpec::Signal { child, .. } => std::slice::from_ref(child),
@@ -318,6 +316,14 @@ impl FactorPlanKernel {
                 }
                 ExprSpec::Where { condition, when_true, when_false } => {
                     if *condition >= index || *when_true >= index || *when_false >= index { return Err(crate::algo::Error::InvalidParameter("plan child must precede parent".into())); }
+                    &[]
+                }
+                ExprSpec::Search {child,dependencies,boundary,config,predicate} => {
+                    if *child>=index || dependencies.iter().any(|&child|child>=index) || boundary.is_some_and(|child|child>=index)
+                        || predicate.as_ref().is_some_and(|p|!p.validate(dependencies.len()))
+                        || config.partition==Some(0) || config.lookback==Some(0) || config.gap_ns.is_some_and(|gap|gap<=0) {
+                        return Err(crate::algo::Error::InvalidParameter("invalid causal search configuration".into()));
+                    }
                     &[]
                 }
                 ExprSpec::Since { condition, .. } | ExprSpec::Distance { condition, .. } => {
@@ -534,23 +540,12 @@ impl FactorPlanKernel {
                         out[product] = curve.map_or(f64::NAN, |points| term_metric(op, points, *near_rank, *far_rank, *depth));
                     }
                 }
-                ExprSpec::MatchDistance { child, predicate, count, nearest, default, include_current } => {
-                    let input = &head[*child];
-                    let node = &mut self.nodes[index];
+                ExprSpec::Search {child,dependencies,boundary,predicate,config} => {
+                    let node=&mut self.nodes[index];
                     for product in 0..products {
-                        let current_value = input[product];
-                        let self_value=predicate.eval(current_value,current_value);
-                        let self_match=*include_current && self_value.is_finite() && self_value!=0.0;
-                        let mut value=if self_match && *nearest {0.0} else {
-                            crate::algo::match_distance_deque(current,current_value,&node.match_history[product],
-                                predicate,*count as u64,*nearest,f64::NAN)
-                        };
-                        if self_match && value.is_nan() {value=0.0;}
-                        if value.is_nan() {value=*default;}
-                        out[product] = value;
-                        let history = &mut node.match_history[product];
-                        history.push_back((current, current_value));
-                        while history.len() > *count { history.pop_front(); }
+                        for (slot,dependency) in node.search_inputs.iter_mut().zip(dependencies) {*slot=head[*dependency][product];}
+                        out[product]=node.searches[product].update(timestamp_ns,head[*child][product],&node.search_inputs,
+                            predicate.as_ref(),config,boundary.is_some_and(|boundary|head[boundary][product]!=0.0));
                     }
                 }
                 ExprSpec::SessionRolling { .. } => unreachable!("handled without cloning above"),
@@ -809,7 +804,11 @@ fn term_metric(op: &str, curve: &[(f64, f64)], near_rank: usize, far_rank: usize
 enum RawMatch {
     Current,
     Candidate,
-    Const { value: f64 },
+    Input {index:usize},
+    Unary {kind:String,a:Box<RawMatch>},
+    Binary {kind:String,a:Box<RawMatch>,b:Box<RawMatch>},
+    Where {condition:Box<RawMatch>,when_true:Box<RawMatch>,when_false:Box<RawMatch>},
+    Const { value: Option<f64> },
     Add { a: Box<RawMatch>, b: Box<RawMatch> },
     Sub { a: Box<RawMatch>, b: Box<RawMatch> },
     Mul { a: Box<RawMatch>, b: Box<RawMatch> },
@@ -828,7 +827,11 @@ fn compile_match(raw: RawMatch) -> crate::algo::MatchExpr {
     match raw {
         RawMatch::Current => M::Current,
         RawMatch::Candidate => M::Candidate,
-        RawMatch::Const { value } => M::Const(value),
+        RawMatch::Input{index}=>M::Input(index),
+        RawMatch::Unary{kind,a}=>M::Unary(kind,Box::new(compile_match(*a))),
+        RawMatch::Binary{kind,a,b}=>M::Binary(kind,Box::new(compile_match(*a)),Box::new(compile_match(*b))),
+        RawMatch::Where{condition,when_true,when_false}=>M::Where(Box::new(compile_match(*condition)),Box::new(compile_match(*when_true)),Box::new(compile_match(*when_false))),
+        RawMatch::Const { value } => M::Const(value.unwrap_or(f64::NAN)),
         RawMatch::Add { a, b } => M::Add(Box::new(compile_match(*a)), Box::new(compile_match(*b))),
         RawMatch::Sub { a, b } => M::Sub(Box::new(compile_match(*a)), Box::new(compile_match(*b))),
         RawMatch::Mul { a, b } => M::Mul(Box::new(compile_match(*a)), Box::new(compile_match(*b))),
@@ -865,6 +868,10 @@ enum RawNode {
     SessionRolling { child: usize, lookback_sessions: usize, sessions: Vec<[i64; 3]>, op: String,
                      min_periods: usize, propagate_nan: bool },
     Term { op: String, near_rank: usize, far_rank: usize, depth: usize, #[serde(default)] column: usize },
+    Search {child:usize, #[serde(default)] dependencies:Vec<usize>,#[serde(default)] boundary:Option<usize>,
+        #[serde(default)] predicate:Option<RawMatch>,#[serde(default)] partition:Option<usize>,#[serde(default)] lookback:Option<usize>,
+        #[serde(default)] gap_ns:Option<i64>,nearest:bool,default_scope:bool,default:Option<f64>,
+        #[serde(default)] include_current:bool,#[serde(default)] propagate_nan:bool},
     MatchDistance { child: usize, predicate: RawMatch, count: usize, nearest: bool,
                     default: Option<f64>, #[serde(default = "default_include_current")] include_current: bool },
     Binary { op: String, left: usize, right: usize },
@@ -916,8 +923,13 @@ impl FactorPlanKernel {
                 }
                 RawNode::Term { op, near_rank, far_rank, depth, column } =>
                     ExprSpec::Term { op, near_rank, far_rank, depth, column },
+                RawNode::Search{child,dependencies,boundary,predicate,partition,lookback,gap_ns,nearest,default_scope,default,include_current,propagate_nan}=>
+                    ExprSpec::Search{child,dependencies,boundary,predicate:predicate.map(compile_match),config:crate::algo::SearchConfig {
+                        partition,lookback,gap_ns,nearest,default_scope,default:default.unwrap_or(f64::NAN),include_current,propagate_nan}},
                 RawNode::MatchDistance { child, predicate, count, nearest, default, include_current } =>
-                    ExprSpec::MatchDistance { child, predicate: compile_match(predicate), count, nearest, default:default.unwrap_or(f64::NAN), include_current },
+                    ExprSpec::Search {child,dependencies:vec![],boundary:None,predicate:Some(compile_match(predicate)),
+                        config:crate::algo::SearchConfig{partition:None,lookback:Some(count),gap_ns:None,nearest,
+                        default_scope:false,default:default.unwrap_or(f64::NAN),include_current,propagate_nan:false}},
                 RawNode::RollingDynamic { child, windows, op, min_periods, propagate_nan } =>
                     ExprSpec::RollingDynamic { child, windows, op: session_op(&op, None)?, min_periods, propagate_nan },
                 RawNode::SessionReset { child, boundary, op, min_periods, propagate_nan } =>
@@ -1372,13 +1384,5 @@ mod category_cursor_tests {
         assert_eq!(kernel.nodes[0].category_cursor,3);
         assert!(kernel.update_at(5,&[0.0,0.0]).is_err());
     }
-    #[test]
-    fn nearest_current_match_does_not_need_history_scan() {
-        let mut kernel=FactorPlanKernel::new(1,vec![ExprSpec::Column(0),ExprSpec::MatchDistance {
-            child:0,predicate:crate::algo::MatchExpr::Const(1.0),count:3,nearest:true,
-            default:9.0,include_current:true
-        }],vec![1]).unwrap();
-        for _ in 0..10000 {assert_eq!(kernel.update(&[1.0]).unwrap(),vec![0.0]);}
-        assert_eq!(kernel.nodes[1].match_history[0].len(),3);
-    }
+
 }

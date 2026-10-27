@@ -32,16 +32,17 @@ def test_category_conflicting_same_time_snapshot_is_not_order_dependent():
         expr.to_plan_spec(products=('A',),categories=categories)
 
 
+@pytest.mark.parametrize('partition',[True,False])
 @pytest.mark.parametrize('nearest',[True,False])
 @pytest.mark.parametrize('inclusive',[True,False])
-def test_match_distance_every_prefix_has_scalar_oracle(nearest,inclusive):
+def test_match_distance_every_prefix_has_scalar_oracle(nearest,inclusive,partition):
     times=pd.date_range('2026-01-01',periods=8,freq='s')
     values=[3.,1.,4.,2.,5.,5.,0.,6.]
-    expression=bar_distance(ColumnRef('CLOSE'),CANDIDATE<=CURRENT,scope=scope_bars(3),
+    expression=bar_distance(ColumnRef('CLOSE'),CANDIDATE<=CURRENT,scope=scope_bars(3) if partition else None,lookback=None if partition else 3,
         select='nearest' if nearest else 'farthest',default=9,include_current=inclusive)
     expected=[]
     for i,current in enumerate(values):
-        candidates=[i-j for j in range(max(0,i-3),i+int(inclusive)) if values[j]<=current]
+        candidates=[i-j for j in range((i//3)*3 if partition else max(0,i-3),i+int(inclusive)) if values[j]<=current]
         expected.append((min(candidates) if nearest else max(candidates)) if candidates else 9)
     for end in range(1,len(times)+1):
         frame=expression.evaluate(EvalContext(('A',),preloaded={'A':pd.DataFrame({'CLOSE':values[:end]},index=times[:end])}))

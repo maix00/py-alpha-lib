@@ -142,26 +142,11 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
                 node["sessions"] = sessions
             elif expr.scope is not None:
                 return None
-        elif isinstance(expr, MatchBarDistanceExpr):
-            child = build(expr.value)
-            if child is None:
-                return None
-            node = {
-                "kind": "match_distance", "child": child,
-                "predicate": _predicate(expr.condition),
-                "count": expr.scope.count, "nearest": expr.select == "nearest",
-                "default": None if np.isnan(expr.default) else expr.default, "include_current": expr.include_current,
-            }
-        elif isinstance(expr, BarSince):
-            child = build(expr.condition)
-            if child is None:
-                return None
-            node = {"kind": "distance" if isinstance(expr, BarDistanceExpr) else "since",
-                    "condition": child, "count": expr.scope.count,
-                    "include_current": bool(expr.include_current),
-                    "nearest": expr.select == "nearest",
-                    "default_scope": expr.default is None,
-                    "default": 0.0 if expr.default is None else float(expr.default)}
+        elif isinstance(expr,(MatchBarDistanceExpr,BarSinceExpr)):
+            is_match=isinstance(expr,MatchBarDistanceExpr)
+            child=build(expr.value if is_match else expr.condition)
+            if child is None:return None
+            node=search_node(expr,child,[],_predicate(expr.condition) if is_match else None)
         else:
             return None
         memo[key] = len(nodes)
@@ -227,6 +212,7 @@ def scope_plan_outputs(spec, requests, products):
         node=dict(spec['nodes'][old])
         for field in NODE_CHILD_FIELDS:
             if node.get(field) is not None:node[field]=visit(node[field],active)
+        if 'dependencies' in node:node['dependencies']=[visit(child,active) for child in node['dependencies']]
         if node['kind']=='cross' and len(active)!=products:
             mask=emit(dict(kind='product',values=[float(i in active) for i in range(products)]))
             zero=emit(dict(kind='const',value=0.0))
@@ -244,3 +230,17 @@ def scope_plan_outputs(spec, requests, products):
     result={**spec,'nodes':nodes,'outputs':outputs,'keys':[json.dumps(x,sort_keys=True) for x in nodes]}
     result.pop('intermediates',None)
     return result,slots
+
+
+def search_node(expr, child, dependencies, predicate, *, boundary=None, partition=None, lookback=None, gap_ns=None):
+    """Wire contract: explicit partition boundaries and independent lookback."""
+    import math
+    if partition is None and getattr(expr,'scope',None) is not None:
+        partition=getattr(expr.scope,'count',None)
+    if lookback is None:lookback=getattr(expr,'lookback',None)
+    default=expr.default
+    return dict(kind='search',child=child,dependencies=dependencies,boundary=boundary,
+        predicate=predicate,partition=partition,lookback=lookback,gap_ns=gap_ns,
+        nearest=expr.select=='nearest',include_current=expr.include_current,
+        default_scope=default is None,default=None if default is None or math.isnan(float(default)) else float(default),
+        propagate_nan=True)

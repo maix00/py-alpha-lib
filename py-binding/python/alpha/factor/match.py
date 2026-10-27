@@ -38,30 +38,33 @@ def _predicate(expr) -> dict:
 
 
 class MatchBarDistanceExpr(FactorExpr):
-    def __init__(self, value, condition, scope: BarCountScope, *,
+    def __init__(self, value, condition, scope: BarCountScope | None, *,
+                 lookback: int | None = None,
                  select: str = "nearest", default: float = 0.0,
                  include_current: bool = True):
         if select not in {"nearest", "farthest"}:
             raise ValueError("select must be nearest or farthest")
         self.value = _to_expr(value)
         self.condition = _to_expr(condition)
+        if scope is None and lookback is None:raise ValueError("search needs partition scope or lookback")
         self.scope = scope
+        self.lookback = lookback
         self.select = select
         self.default = float(default)
         self.include_current = include_current
 
     def _structural_key(self):
-        return ("alpha.factor.MatchBarDistanceExpr", self.scope.count, self.select,
+        return ("alpha.factor.MatchBarDistanceExpr:v2", None if self.scope is None else self.scope.count, self.lookback,self.select,
                 self.default, self.include_current,
                 self.value._structural_key(), self.condition._structural_key())
 
     # Inherit the shared matrix Plan; no Python predicate/window evaluator.
 
 
-def bar_distance(value, condition=None, *, scope: BarCountScope, select: str = "nearest",
+def bar_distance(value, condition=None, *, scope: BarCountScope | None = None, lookback: int | None = None, select: str = "nearest",
                  default: float = 0.0, include_current: bool = True) -> MatchBarDistanceExpr:
     if condition is None:
         from .bar_search import BarDistanceExpr
-        return BarDistanceExpr(value,scope,select=select,default=default,include_current=include_current)
-    return MatchBarDistanceExpr(value, condition, scope, select=select,
+        return BarDistanceExpr(value,scope,lookback=lookback,select=select,default=default,include_current=include_current)
+    return MatchBarDistanceExpr(value, condition, scope, lookback=lookback,select=select,
                                 default=default, include_current=include_current)

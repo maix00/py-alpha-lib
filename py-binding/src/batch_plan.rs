@@ -22,8 +22,9 @@ impl BatchPlan {
         Ok(self.inner.add(op, children, params, indices, grid)?)
     }
 
-    fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize) -> PyResult<usize> {
-        Ok(self.inner.add_kernel(json,children,grid,products)?)
+    #[pyo3(signature=(json,children,grid,products,reset_by_day=false))]
+    fn add_kernel(&mut self, json: String, children: Vec<usize>, grid: usize, products: usize, reset_by_day:bool) -> PyResult<usize> {
+        Ok(self.inner.add_kernel(json,children,grid,products,reset_by_day)?)
     }
 
     #[staticmethod]

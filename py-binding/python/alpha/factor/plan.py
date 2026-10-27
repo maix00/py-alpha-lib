@@ -195,6 +195,7 @@ class _Builder:
         from .scopes import TradingDayScope, SessionScope
         from .bar_search import BarSinceExpr
         from .match import MatchBarDistanceExpr, _predicate
+        from .spec import search_node
         from .category import CategoryBoolRef,category_node
 
         from .signal import SignalAlign
@@ -204,9 +205,7 @@ class _Builder:
             ref=self.kernel(category_node(expr,self.products,self.ctx.categories))
         elif isinstance(expr,MatchBarDistanceExpr):
             child=self.build(expr.value)
-            ref=self.kernel(dict(kind='match_distance',child=0,predicate=_predicate(expr.condition),
-                count=expr.scope.count,nearest=expr.select=='nearest',default=None if np.isnan(expr.default) else expr.default,
-                include_current=expr.include_current),child)
+            ref=self.kernel(search_node(expr,0,[],_predicate(expr.condition)),child)
         elif isinstance(expr,SignalAlign):
             ref=self.signal(expr)
         elif isinstance(expr,TermStructureExpr):
@@ -265,9 +264,7 @@ class _Builder:
             )
         elif isinstance(expr, BarSinceExpr):
             child = self.build(expr.condition)
-            ref=self.kernel(dict(kind='since',condition=0,count=expr.scope.count,
-                include_current=expr.include_current,nearest=expr.select=='nearest',
-                default_scope=expr.default is None,default=0.0 if expr.default is None else float(expr.default)),child)
+            ref=self.kernel(search_node(expr,0,[],None),child)
         elif isinstance(expr, CompositeExpr):
             children = [self.build(item) for item in expr.operands]
             ref = self.point(expr.op,children)

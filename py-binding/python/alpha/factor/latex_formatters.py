@@ -291,9 +291,12 @@ def render_GroupByScopeOp(self, subst: dict | None=None) -> str:
         return '\\mathrm{R}^{' + scope + ',\\mathrm{trunc}(' + left + ',' + right + ')}'
     return '\\mathrm{R}^{' + scope + '}'
 
-def _search_latex(*, scope: Any, select: str, body: str, subst: dict | None=None) -> str:
+def _search_latex(*, scope: Any, select: str, body: str, subst: dict | None=None, lookback=None) -> str:
     operator = '\\min' if select == 'nearest' else '\\max'
-    subscript = f'[t-k,t]\\in{scope.to_latex(subst)}'
+    subscript = f'[t-k,t]\\in{scope.to_latex(subst)}' if scope is not None else r't-k\leq t'
+    if lookback is not None:
+        bound=lookback._to_latex(subst) if hasattr(lookback,'_to_latex') else str(lookback)
+        subscript+=r',k\leq '+bound
     return f'{operator}_{{{subscript}}}\\left\\{{k\\middle|\\begin{{aligned}}{body}\\end{{aligned}}\\right\\}}'
 
 def render_ScopeLengthDefault(self, subst: dict | None=None) -> str:
@@ -301,12 +304,12 @@ def render_ScopeLengthDefault(self, subst: dict | None=None) -> str:
 
 def render_BarSinceOp(self, subst: dict | None=None) -> str:
     condition = self.condition._to_latex(subst)
-    return _search_latex(scope=self.scope, select=self.select, body=condition, subst=subst)
+    return _search_latex(scope=self.scope, select=self.select, body=condition, subst=subst,lookback=getattr(self,"lookback",None))
 
 def render_BarDistanceOp(self, subst: dict | None=None) -> str:
     value = self.value._to_latex(subst)
     condition = self.condition._to_latex(subst)
-    return _search_latex(scope=self.scope, select=self.select, body=f'X_t:={value},\\\\{condition}', subst=subst)
+    return _search_latex(scope=self.scope, select=self.select, body=f'X_t:={value},\\\\{condition}', subst=subst,lookback=getattr(self,"lookback",None))
 
 def _operand_latex_arg(expr: Any, *, column: bool=False) -> str:
     if column:

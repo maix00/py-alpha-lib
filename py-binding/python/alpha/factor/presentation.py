@@ -175,7 +175,7 @@ class RenderSession:
         if renderer is None:
             raise TypeError(f'no formula adapter for {node.kind}')
         # Scope fields are view objects as well, not a host's calendar class.
-        if 'scope' in node.fields:
+        if node.fields.get('scope') is not None:
             node.fields['scope']=self.view(node.fields['scope'])
         return renderer(node,subst)
 
