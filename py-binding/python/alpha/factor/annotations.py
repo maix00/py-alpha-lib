@@ -99,13 +99,16 @@ def scoped_annotations(expression, prefix):
     Arrays, parameters and immutable payloads are borrowed, never duplicated.
     A memo preserves shared subgraphs; numeric node identities are unchanged.
     """
-    from copy import copy
     from dataclasses import replace
     memo={}
     def clone(node):
         if id(node) in memo:
             return memo[id(node)]
-        result=copy(node);memo[id(node)]=result
+        # Compatibility nodes may require operands in __new__. This is a DAG
+        # metadata clone, not construction/evaluation of a new expression.
+        result=object.__new__(type(node))
+        vars(result).update(vars(node))
+        memo[id(node)]=result
         for name,value in vars(node).items():
             if name.startswith('_intermediate') or name=='_node_annotation':
                 continue

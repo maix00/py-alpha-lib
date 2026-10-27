@@ -862,11 +862,11 @@ enum RawNode {
               #[serde(default)] trunc_start_child: Option<usize>,
               #[serde(default)] trunc_end_child: Option<usize> },
     Scope { child: usize, count: usize, op: String, min_periods: usize, propagate_nan: bool,
-            #[serde(default)] sessions: Vec<[i64; 3]> },
-    RollingDynamic { child: usize, windows: Vec<usize>, op: String, min_periods: usize, propagate_nan: bool },
-    SessionReset { child: usize, boundary: usize, op: String, min_periods: usize, propagate_nan: bool },
+            #[serde(default)] sessions: Vec<[i64; 3]>, #[serde(default)] quantile: Option<f64> },
+    RollingDynamic { child: usize, windows: Vec<usize>, op: String, min_periods: usize, propagate_nan: bool, #[serde(default)] quantile: Option<f64> },
+    SessionReset { child: usize, boundary: usize, op: String, min_periods: usize, propagate_nan: bool, #[serde(default)] quantile: Option<f64> },
     SessionRolling { child: usize, lookback_sessions: usize, sessions: Vec<[i64; 3]>, op: String,
-                     min_periods: usize, propagate_nan: bool },
+                     min_periods: usize, propagate_nan: bool, #[serde(default)] quantile: Option<f64> },
     Term { op: String, near_rank: usize, far_rank: usize, depth: usize, #[serde(default)] column: usize },
     Search {child:usize, #[serde(default)] dependencies:Vec<usize>,#[serde(default)] boundary:Option<usize>,
         #[serde(default)] predicate:Option<RawMatch>,#[serde(default)] partition:Option<usize>,#[serde(default)] lookback:Option<usize>,
@@ -930,16 +930,16 @@ impl FactorPlanKernel {
                     ExprSpec::Search {child,dependencies:vec![],boundary:None,predicate:Some(compile_match(predicate)),
                         config:crate::algo::SearchConfig{partition:None,lookback:Some(count),gap_ns:None,nearest,
                         default_scope:false,default:default.unwrap_or(f64::NAN),include_current,propagate_nan:false}},
-                RawNode::RollingDynamic { child, windows, op, min_periods, propagate_nan } =>
-                    ExprSpec::RollingDynamic { child, windows, op: session_op(&op, None)?, min_periods, propagate_nan },
-                RawNode::SessionReset { child, boundary, op, min_periods, propagate_nan } =>
-                    ExprSpec::SessionReset { child, boundary, op: session_op(&op, None)?, min_periods, propagate_nan },
-                RawNode::SessionRolling { child, lookback_sessions, sessions, op, min_periods, propagate_nan } =>
+                RawNode::RollingDynamic { child, windows, op, min_periods, propagate_nan, quantile } =>
+                    ExprSpec::RollingDynamic { child, windows, op: session_op(&op, quantile)?, min_periods, propagate_nan },
+                RawNode::SessionReset { child, boundary, op, min_periods, propagate_nan, quantile } =>
+                    ExprSpec::SessionReset { child, boundary, op: session_op(&op, quantile)?, min_periods, propagate_nan },
+                RawNode::SessionRolling { child, lookback_sessions, sessions, op, min_periods, propagate_nan, quantile } =>
                     ExprSpec::SessionRolling { child, lookback_sessions,
                         sessions: sessions.into_iter().map(|item| (item[0], item[1], item[2] as usize)).collect(),
-                        op: session_op(&op, None)?, min_periods, propagate_nan },
-                RawNode::Scope { child, count, op, min_periods, propagate_nan, sessions } =>
-                    ExprSpec::Scope { child, count, op: session_op(&op, None)?, min_periods, propagate_nan,
+                        op: session_op(&op, quantile)?, min_periods, propagate_nan },
+                RawNode::Scope { child, count, op, min_periods, propagate_nan, sessions, quantile } =>
+                    ExprSpec::Scope { child, count, op: session_op(&op, quantile)?, min_periods, propagate_nan,
                         sessions: sessions.into_iter().map(|item| (item[0], item[1], item[2])).collect() },
                 RawNode::Binary { op, left, right } => ExprSpec::Binary {
                     op: match op.as_str() {
