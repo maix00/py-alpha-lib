@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -10,8 +10,7 @@ import pandas as pd
 from .timeline import timestamps_ns as _times
 
 
-@dataclass
-class _Grid:
+class _Grid(NamedTuple):
     id: int
     index: pd.Index
     positions: np.ndarray
@@ -22,8 +21,7 @@ class _Grid:
     partitions: list | None = None
 
 
-@dataclass
-class _Ref:
+class _Ref(NamedTuple):
     id: int
     grid: _Grid
     columns: tuple
@@ -65,10 +63,11 @@ class _Builder:
         self.aligned = {}
         self.term_inputs = {}
         self.term_slots = {}
-        for node in _walk(expressions):
+        graph=tuple(_walk(expressions))
+        for node in graph:
             if type(node).__name__=="TermStructureExpr":
                 self.term_slots[node.column]=max(self.term_slots.get(node.column,0),node.near_rank+1,node.far_rank+1,node.depth)
-        for expr in _walk(expressions):
+        for expr in graph:
             if type(expr).__name__ == "ColumnRef":
                 self.frames[expr._structural_key()] = expr._evaluate(ctx)
         if ctx.timeline is None:

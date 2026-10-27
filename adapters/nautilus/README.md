@@ -52,3 +52,13 @@ can be shared across scopes; cross-sectional ancestors must be specialized by
 universe via alpha's plan compiler before installing the runtime. A host must
 honor Nautilus OMS/account semantics: independent overlapping target strategies
 require hedging positions rather than inventing per-strategy netting balances.
+
+
+Mixed families may have different logical IDs but the same Nautilus order tag
+(e.g. Group-1 and Threshold-1). Registration keeps nonconflicting IDs and appends
+a deterministic, reserved-tag-safe factor ordinal only for collisions. The
+runtime handle exports the logical-to-native ID mapping for report attribution;
+no matching/account rules or market buffers change. Same inputs and frozen
+consumer order produce the same mapping. This adapter owns its consumer set;
+pre-existing independently registered strategies remain subject to Nautilus'
+normal collision checks.

@@ -128,7 +128,7 @@ class ColumnRef(FactorExpr):
             if frame is None or self.column not in frame.columns:
                 raise KeyError(f"no preloaded column {self.column!r} for {product!r}")
             frames.append(frame[self.column].rename(product))
-        return pd.concat(frames, axis=1)
+        return frames[0].to_frame() if len(frames)==1 else pd.concat(frames, axis=1)
 
     def evaluate(self, ctx: EvalContext) -> pd.DataFrame:
         return self._evaluate(ctx)

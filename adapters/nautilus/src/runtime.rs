@@ -44,6 +44,7 @@ pub struct FamilyRuntimeHandle {
     slices: Arc<AtomicUsize>,
     consumers: Vec<Arc<AtomicUsize>>,
     pub node_count: usize,
+    pub consumer_strategy_ids: Vec<(String,String)>,
     rankings: Rc<RefCell<SharedRankings>>,
     actor: std::rc::Weak<std::cell::UnsafeCell<dyn nautilus_common::actor::Actor>>,
 }
@@ -151,7 +152,10 @@ pub fn install_family_runtime(
     let mut strategies = Vec::new();
     let mut consumers = Vec::new();
     let mut ids = std::collections::HashSet::new();
-    for spec in specs {
+    let reserved_tags:std::collections::HashSet<String>=specs.iter().map(|s|s.strategy_id.rsplit('-').next().unwrap().to_owned()).collect();
+    let mut used_tags=std::collections::HashSet::new();
+    let mut consumer_strategy_ids=Vec::with_capacity(specs.len());
+    for (ordinal,mut spec) in specs.into_iter().enumerate() {
         anyhow::ensure!(
             ids.insert(spec.strategy_id.clone()),
             "duplicate strategy consumer id"
@@ -160,6 +164,20 @@ pub fn install_family_runtime(
             spec.signal_output < outputs,
             "consumer signal output is outside the plan"
         );
+        let logical_id=spec.strategy_id.clone();
+        let tag=spec.strategy_id.rsplit('-').next().unwrap().to_owned();
+        if !used_tags.insert(tag) {
+            let mut suffix=ordinal;
+            loop {
+                let tag=format!("factor{suffix}");
+                if !reserved_tags.contains(&tag) && used_tags.insert(tag.clone()) {
+                    spec.strategy_id=format!("{}-{tag}",spec.strategy_id);
+                    break;
+                }
+                suffix+=1;
+            }
+        }
+        consumer_strategy_ids.push((logical_id,spec.strategy_id.clone()));
         let strategy = FamilyStrategy::new(
             spec,
             instruments.clone(),
@@ -205,6 +223,7 @@ pub fn install_family_runtime(
         slices,
         consumers,
         node_count,
+        consumer_strategy_ids,
         rankings,
     })
 }

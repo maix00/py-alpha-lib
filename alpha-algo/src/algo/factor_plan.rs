@@ -539,13 +539,13 @@ impl FactorPlanKernel {
                     let node = &mut self.nodes[index];
                     for product in 0..products {
                         let current_value = input[product];
-                        let mut value = crate::algo::match_distance_deque(
-                            current, current_value, &node.match_history[product],
-                            predicate, *count as u64, *nearest, f64::NAN,
-                        );
-                        let self_match=predicate.eval(current_value,current_value);
-                        if *include_current && self_match.is_finite() && self_match!=0.0
-                            && (*nearest || value.is_nan()) {value=0.0;}
+                        let self_value=predicate.eval(current_value,current_value);
+                        let self_match=*include_current && self_value.is_finite() && self_value!=0.0;
+                        let mut value=if self_match && *nearest {0.0} else {
+                            crate::algo::match_distance_deque(current,current_value,&node.match_history[product],
+                                predicate,*count as u64,*nearest,f64::NAN)
+                        };
+                        if self_match && value.is_nan() {value=0.0;}
                         if value.is_nan() {value=*default;}
                         out[product] = value;
                         let history = &mut node.match_history[product];
@@ -1354,5 +1354,31 @@ mod signal_gap_tests {
                 }
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod category_cursor_tests {
+    use super::*;
+    #[test]
+    fn category_latest_snapshot_uses_one_monotone_cursor() {
+        let mut kernel=FactorPlanKernel::new(2,vec![ExprSpec::Category {
+            memberships:vec![(0,20,false),(1,10,true),(0,-10,true)]
+        }],vec![0]).unwrap();
+        assert_eq!(kernel.update_at(-20,&[0.0,0.0]).unwrap(),vec![0.0,0.0]);
+        assert_eq!(kernel.update_at(0,&[0.0,0.0]).unwrap(),vec![1.0,0.0]);
+        assert_eq!(kernel.update_at(30,&[0.0,0.0]).unwrap(),vec![0.0,1.0]);
+        assert_eq!(kernel.nodes[0].category_cursor,3);
+        assert!(kernel.update_at(5,&[0.0,0.0]).is_err());
+    }
+    #[test]
+    fn nearest_current_match_does_not_need_history_scan() {
+        let mut kernel=FactorPlanKernel::new(1,vec![ExprSpec::Column(0),ExprSpec::MatchDistance {
+            child:0,predicate:crate::algo::MatchExpr::Const(1.0),count:3,nearest:true,
+            default:9.0,include_current:true
+        }],vec![1]).unwrap();
+        for _ in 0..10000 {assert_eq!(kernel.update(&[1.0]).unwrap(),vec![0.0]);}
+        assert_eq!(kernel.nodes[1].match_history[0].len(),3);
     }
 }
