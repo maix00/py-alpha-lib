@@ -20,7 +20,8 @@ class HistoryRequirement:
     def manifest(self):
         return {**asdict(self), 'blockers':list(self.blockers),
                 'bound':'conservative_full_window','exact_minimum':False,
-                'requires_calendar':bool(self.trading_days or self.source_bars or self.full_partitions)}
+                'requires_calendar':bool(self.trading_days or self.full_partitions),
+                'requires_observation_index':bool(self.source_bars or self.elapsed_ns)}
 
 
 def _maximum(rows):
@@ -63,7 +64,9 @@ def warmup_requirements(expression_or_plan):
         elif kind=='session_rolling':
             values['trading_days']+=int(node['lookback_sessions']);temporal.append(index)
         elif kind in {'scope','session_reset'}:
-            if kind=='scope' and not node.get('sessions'):values['source_bars']+=max(0,int(node['count'])-1)
+            if kind=='scope' and not node.get('sessions'):
+                if int(node['count'])<=0:values['blockers']+=('scope_requires_frozen_calendar',)
+                else:values['source_bars']+=int(node['count'])-1
             else:values['full_partitions']+=1
             temporal.append(index)
         elif kind=='signal':values['elapsed_ns']+=int(node['signal_ns']);temporal.append(index)
@@ -72,7 +75,8 @@ def warmup_requirements(expression_or_plan):
             values['source_bars']+=max(0,int(width)-(0 if node.get('lookback') is not None else 1))
             if node.get('boundary') is not None or node.get('gap_ns'):values['full_partitions']+=1
             temporal.append(index)
-        elif kind in {'const','product','category','boundary','unary','binary','where','neg','cross','term','bar_count'}:pass
+        elif kind=='bar_count':values['blockers']+=('fixed_interval_requires_source_coverage',)
+        elif kind in {'const','product','category','boundary','unary','binary','where','neg','cross','term'}:pass
         else:values['blockers']+=(f'unsupported_node:{kind}',)
         if node.get('trunc_start_child') is not None or node.get('trunc_end_child') is not None:
             values['blockers']+=('dynamic_truncation_requires_bound',)
@@ -118,16 +122,18 @@ class WarmupTimeline:
     keep their underlying frozen-version buffers immutable. Derived signal maps
     are cached and no price/history panel is retained here.
     """
-    def __init__(self,observation_times,trading_days):
+    def __init__(self,observation_times,trading_days, *, product_index=None):
         import numpy as np
         self.times=np.asarray(observation_times,dtype=np.int64).view()
         self.days=np.asarray(trading_days).view()
         if self.times.ndim!=1 or len(self.times)!=len(self.days) or not len(self.times):raise ValueError('warmup timeline shape mismatch')
         if np.any(self.times[1:]<=self.times[:-1]):raise ValueError('warmup observation times must be strictly increasing')
+        if not self.times.flags.c_contiguous:raise ValueError('warmup index must be contiguous; freeze it once at the source')
         self.times.flags.writeable=False;self.days.flags.writeable=False
         self.starts=np.r_[0,np.flatnonzero(self.days[1:]!=self.days[:-1])+1]
         self.observed=np.ones(len(self.times),dtype=np.uint8)
         self.signal_maps={}
+        self.product_index=product_index
 
     def required_start(self,plan, *, trading_start_ns:int,boundary_indices=None):
         """Exact structural bound for full windows on this frozen source index.
@@ -151,18 +157,24 @@ class WarmupTimeline:
             key=(n,i)
             if key in memo:return memo[key]
             node=nodes[n];kind=node['kind'];children=[]
-            if kind in {'column','const','product','category','term','boundary','bar_count'}:result=i
+            if kind in {'column','const','product','category','term','boundary'}:result=i
             elif kind=='shift':
                 shift=int(node['periods'])
                 if shift<0:raise ValueError('future shift cannot have causal warmup')
                 result=visit(node['child'],i-shift)
             elif kind in {'rolling','rolling_dynamic','linreg'}:
-                width=int(node.get('window',max(node.get('windows',[1]))))
+                if kind=='rolling_dynamic':
+                    windows=node['windows']
+                    if self.product_index is None and len(windows)>1:raise ValueError('exact dynamic-window warmup requires a product_index')
+                    width=int(windows[0 if self.product_index is None else self.product_index])
+                else:width=int(node['window'])
                 result=visit(node['child'],i-width+1)
             elif kind=='session_rolling':result=visit(node['child'],day_start(i,node['lookback_sessions']))
             elif kind in {'scope','session_reset'}:
                 if kind=='scope' and not node.get('sessions'):
-                    count=int(node['count']);left=i//count*count;periodic=True
+                    count=int(node['count'])
+                    if count<=0:raise ValueError('exact scope warmup requires a frozen calendar')
+                    left=i//count*count;periodic=True
                 elif kind=='scope':
                     sessions=node['sessions'];stamp=t[i]
                     scope=next((s for s in sessions if s[0]<=stamp<=s[1]),None)

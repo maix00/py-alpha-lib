@@ -60,8 +60,6 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
             if q:
                 node["quantile"] = float(q)
         elif isinstance(expr, GroupByScopeOp):
-            if expr.op.startswith("quantile"):
-                return None
             child = build(expr.owner.data)
             if child is None:
                 return None
@@ -74,10 +72,12 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
                 count = getattr(scope, "count", 0)
             node = {
                 "kind": "scope", "child": child, "count": count,
-                "op": expr.op, "min_periods": expr.owner.semantics.effective_min_periods,
+                "op": expr.op.partition(":")[0], "min_periods": expr.owner.semantics.effective_min_periods,
                 "propagate_nan": expr.owner.semantics.nan_policy.value == "propagate",
                 "sessions": sessions,
             }
+            if expr.op.startswith('quantile:'):
+                node['quantile']=float(expr.op.partition(':')[2])
         elif isinstance(expr, CrossSectionalExpr):
             child = build(expr.operand)
             if child is None:

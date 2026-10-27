@@ -67,3 +67,15 @@ def test_conservative_suffix_does_not_change_formal_values_or_leave_warmup_nans(
     full=replay(0)[formal:];suffix=replay(first)[formal-first:]
     assert np.isfinite(suffix).all()
     np.testing.assert_allclose(suffix,full,rtol=0,atol=1e-12)
+
+
+def test_public_scope_quantile_uses_the_shared_kernel_and_keeps_quantile():
+    import json,numpy as np
+    from alpha import FactorPlanState
+    from alpha.factor import ColumnRef,scope_bars,to_plan_spec
+    expr=ColumnRef('CLOSE').groupby_scope(scope_bars(3)).quantile(.8)
+    spec=to_plan_spec([expr]);assert spec['nodes'][-1]['quantile']==.8
+    assert warmup_requirements(expr)['combined']['source_bars']==2
+    state=FactorPlanState(json.dumps(spec),1)
+    actual=[state.update(np.array([v]))[0] for v in [1.,2.,3.,10.,20.,30.]]
+    np.testing.assert_allclose(actual,[1,1.8,2.6,10,18,26])
