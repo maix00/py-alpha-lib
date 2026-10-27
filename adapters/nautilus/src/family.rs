@@ -122,6 +122,8 @@ pub struct ConsumerSpec {
     pub strategy_id: String,
     pub signal_output: usize,
     #[serde(default)]
+    pub trading_start_ns: Option<i64>,
+    #[serde(default)]
     pub product_indices: Option<Vec<usize>>,
     pub rule: FamilyRule,
 }
@@ -203,6 +205,8 @@ impl FamilyStrategy {
     }
 
     fn consume(&mut self, update: &FactorUpdate) -> anyhow::Result<()> {
+        self.publications.fetch_add(1, Ordering::Relaxed);
+        if self.spec.trading_start_ns.is_some_and(|start| update.available_at_ns < start) {return Ok(());}
         let count = self.instruments.len();
         let start = self
             .spec
@@ -224,7 +228,6 @@ impl FamilyStrategy {
             self.eligible_ranking.extend(ranking.iter().copied().filter(|&i|self.active[i]));
             self.spec.rule.fill_targets(values,&self.eligible_ranking,&mut self.targets);
         }
-        self.publications.fetch_add(1, Ordering::Relaxed);
         let strategy_id = self
             .strategy_core()
             .strategy_id()

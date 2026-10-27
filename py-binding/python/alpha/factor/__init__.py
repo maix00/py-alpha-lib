@@ -64,3 +64,8 @@ __all__ += ["compile_factor_outputs"]
 
 from .presentation import LayerFormula
 __all__ += ["LayerFormula"]
+
+from .warmup import HistoryRequirement, warmup_requirements, required_history_start
+__all__ += ['HistoryRequirement', 'warmup_requirements', 'required_history_start']
+from .warmup import WarmupTimeline
+__all__ += ['WarmupTimeline']
