@@ -143,4 +143,19 @@ mod unified_search_tests {
         for t in 0..10000 {assert_eq!(state.update(t,1.0,&[],Some(&MatchExpr::Const(1.0)),&c,false),0.0);}
         assert_eq!(state.history.len(),3);
     }
+    #[test]
+    fn search_capacity_stabilizes_after_warmup() {
+        let mut matched=BarSearchState::default();let mut events=BarSearchState::default();
+        let mut c=config();c.partition=Some(120);c.lookback=Some(60);
+        let predicate=MatchExpr::Lt(Box::new(MatchExpr::Candidate),Box::new(MatchExpr::Current));
+        let mut capacities=(0,0);
+        for t in 0..100000 {
+            matched.update(t,(t%197) as f64,&[],Some(&predicate),&c,false);
+            events.update(t,1.0,&[],None,&c,false);
+            if t==999 {capacities=(matched.history.capacity(),events.events.capacity());}
+            if t>=1000 {assert_eq!((matched.history.capacity(),events.events.capacity()),capacities);}
+            assert!(matched.history.len()<=60 && events.events.len()<=61);
+        }
+    }
+
 }
