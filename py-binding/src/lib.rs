@@ -7,13 +7,17 @@ use alpha_algo::Context;
 use pyo3::prelude::*;
 use numpy::PyArrayMethods;
 
+mod batch_plan;
+use batch_plan::BatchPlan;
+
 static _ALGO_CTX_: LazyLock<RwLock<Context>> = LazyLock::new(|| RwLock::new(Context::default()));
 
 mod algo_impl {
   use log::debug;
-  use numpy::{PyReadonlyArray1, PyReadwriteArray1};
+  use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
   use pyo3::{exceptions::PyValueError, prelude::*, types::PyList};
   use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+  use rayon::slice::ParallelSliceMut;
 
   use crate::_ALGO_CTX_;
 
@@ -26,6 +30,417 @@ mod algo_impl {
     };
     debug!("current {}", ctx);
     ctx
+  }
+
+  fn interval_op(name: &str, quantile: Option<f64>) -> PyResult<alpha_algo::SessionOp> {
+    use alpha_algo::SessionOp;
+    Ok(match name {
+      "sum" => SessionOp::Sum, "mean" => SessionOp::Mean,
+      "var" => SessionOp::Var, "std" => SessionOp::Std,
+      "min" => SessionOp::Min, "max" => SessionOp::Max,
+      "skew" => SessionOp::Skew, "argmin" => SessionOp::Argmin,
+      "argmin_raw" => SessionOp::ArgminRaw, "argmax_raw" => SessionOp::ArgmaxRaw,
+      "argmax" => SessionOp::Argmax, "argmin_raw" => SessionOp::ArgminRaw,
+      "argmax_raw" => SessionOp::ArgmaxRaw, "rank" => SessionOp::Rank,
+      "mad" => SessionOp::Mad,
+      "median" | "quantile" => SessionOp::Quantile(quantile.unwrap_or(0.5)),
+      other => return Err(pyo3::exceptions::PyValueError::new_err(
+        format!("unsupported interval op: {other}")
+      )),
+    })
+  }
+
+  #[pyfunction]
+  #[pyo3(signature = (values, span, min_periods=1, propagate_nan=true))]
+  pub fn interval_ema(
+    py: Python<'_>, values: PyReadonlyArray1<f64>, span: usize,
+    min_periods: usize, propagate_nan: bool,
+  ) -> PyResult<Py<PyArray1<f64>>> {
+    let values = values.as_slice()?;
+    let mut state = alpha_algo::EmaState::new(span)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .with_semantics(min_periods, propagate_nan);
+    Ok(values.iter().copied().map(|value| state.update(value))
+      .collect::<Vec<_>>().into_pyarray(py).unbind())
+  }
+
+  #[pyfunction]
+  #[pyo3(signature = (values, count, include_current=true, nearest=true, default_scope=true, default=0.0))]
+  pub fn bar_since(
+    py: pyo3::Python<'_>, values: numpy::PyReadonlyArray1<f64>, count: usize,
+    include_current: bool, nearest: bool, default_scope: bool, default: f64,
+  ) -> pyo3::PyResult<pyo3::Py<numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    let values = values.as_slice()?;
+    let count = count.max(1);
+    let mut out = vec![f64::NAN; values.len()];
+    let mut first: Option<usize> = None;
+    let mut last: Option<usize> = None;
+    let mut base = 0usize;
+    for index in 0..values.len() {
+      if index % count == 0 { base = index; first = None; last = None; }
+      let truth = values[index].is_finite() && values[index] != 0.0;
+      if truth && include_current {
+        if first.is_none() { first = Some(index); }
+        last = Some(index);
+      }
+      let matched = if nearest { last } else { first };
+      out[index] = match matched {
+        Some(hit) => (index - hit) as f64,
+        None => if default_scope { (index - base) as f64 } else { default },
+      };
+      if truth && !include_current {
+        if first.is_none() { first = Some(index); }
+        last = Some(index);
+      }
+    }
+    Ok(out.into_pyarray(py).unbind())
+  }
+
+  #[pyfunction]
+  pub fn cross_sectional(
+    py: pyo3::Python<'_>, columns: Vec<numpy::PyReadonlyArray1<f64>>, op: &str,
+  ) -> pyo3::PyResult<Vec<pyo3::Py<numpy::PyArray1<f64>>>> {
+    use numpy::IntoPyArray;
+    let slices: Vec<&[f64]> = columns.iter().map(|c| c.as_slice()).collect::<Result<_, _>>()?;
+    let rows = slices.first().map(|c| c.len()).unwrap_or(0);
+    let width = slices.len();
+    if slices.iter().any(|c| c.len() != rows) {
+      return Err(pyo3::exceptions::PyValueError::new_err("cross_sectional length mismatch"));
+    }
+    let mut output = vec![vec![f64::NAN; rows]; width];
+    for row in 0..rows {
+      let mut values: Vec<(usize, f64)> = (0..width)
+        .map(|column| (column, slices[column][row]))
+        .filter(|(_, value)| value.is_finite())
+        .collect();
+      if values.is_empty() { continue; }
+      match op {
+        "cs_zscore" => {
+          let n = values.len() as f64;
+          let mean = values.iter().map(|(_, value)| *value).sum::<f64>() / n;
+          let variance = values.iter().map(|(_, value)| (*value - mean).powi(2)).sum::<f64>() / n;
+          let std = variance.sqrt();
+          if std > 0.0 {
+            for (column, value) in values { output[column][row] = (value - mean) / std; }
+          } else {
+            for (column, _) in values { output[column][row] = 0.0; }
+          }
+        }
+        "cs_rank" => {
+          values.sort_by(|a, b| a.1.total_cmp(&b.1));
+          let n = values.len() as f64;
+          for (rank, (column, _)) in values.into_iter().enumerate() {
+            output[column][row] = (rank as f64 + 1.0) / n - 0.5;
+          }
+        }
+        other => return Err(pyo3::exceptions::PyValueError::new_err(
+          format!("cross_sectional does not support {other}")
+        )),
+      }
+    }
+    Ok(output.into_iter().map(|values| values.into_pyarray(py).unbind()).collect())
+  }
+
+  #[pyfunction]
+  #[pyo3(signature = (values, starts, ends, op, quantile=None, window=None, min_periods=1, propagate_nan=false))]
+  pub fn interval_rolling(
+    py: Python<'_>, values: PyReadonlyArray1<f64>, starts: PyReadonlyArray1<u64>,
+    ends: PyReadonlyArray1<u64>, op: &str, quantile: Option<f64>,
+    window: Option<usize>, min_periods: usize, propagate_nan: bool,
+  ) -> PyResult<Py<PyArray1<f64>>> {
+    let values = values.as_slice()?;
+    let starts = starts.as_slice()?;
+    let ends = ends.as_slice()?;
+    let fixed = window.is_some();
+    if !fixed && (values.len() != starts.len() || values.len() != ends.len()) {
+      return Err(pyo3::exceptions::PyValueError::new_err(
+        "interval_rolling length mismatch"
+      ));
+    }
+    let op = interval_op(op, quantile)?;
+    let window = window.unwrap_or(1).max(1);
+    if fixed && matches!(
+      op, alpha_algo::SessionOp::Sum | alpha_algo::SessionOp::Mean
+        | alpha_algo::SessionOp::Var | alpha_algo::SessionOp::Std
+        | alpha_algo::SessionOp::Skew
+    ) {
+      // SumMoments family: one independent sliding state per chunk, like upstream.
+      #[derive(Clone, Copy)]
+      enum Moment { Sum, Mean, Var, Std, Skew }
+      let family = match op {
+        alpha_algo::SessionOp::Mean => Moment::Mean,
+        alpha_algo::SessionOp::Var => Moment::Var,
+        alpha_algo::SessionOp::Std => Moment::Std,
+        alpha_algo::SessionOp::Skew => Moment::Skew,
+        _ => Moment::Sum,
+      };
+      let n = values.len();
+      {
+        const CHUNK: usize = 65_536;
+        let mut out = vec![f64::NAN; n];
+        out.par_chunks_mut(CHUNK).enumerate().for_each(|(chunk_index, chunk)| {
+          let chunk_start = chunk_index * CHUNK;
+          let (mut total, mut square, mut cube, mut count) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+          for value in &values[chunk_start.saturating_sub(window)..chunk_start] {
+            if value.is_finite() {
+              total += *value; square += *value * *value; cube += *value * *value * *value;
+              count += 1;
+            }
+          }
+          for (offset, slot) in chunk.iter_mut().enumerate() {
+            let index = chunk_start + offset;
+            let value = values[index];
+            if value.is_finite() {
+              total += value; square += value * value; cube += value * value * value;
+              count += 1;
+            }
+            if index >= window {
+              let old = values[index - window];
+              if old.is_finite() {
+                total -= old; square -= old * old; cube -= old * old * old;
+                count -= 1;
+              }
+            }
+            let width = (index + 1).min(window);
+            *slot = if count < min_periods || (propagate_nan && count < width) || count == 0 { f64::NAN } else {
+              match family {
+                Moment::Sum => total,
+                Moment::Mean => total / count as f64,
+                Moment::Var | Moment::Std => {
+                  if count < 2 { f64::NAN } else {
+                    let variance = ((square - total * total / count as f64) / (count - 1) as f64).max(0.0);
+                    if matches!(family, Moment::Std) { variance.sqrt() } else { variance }
+                  }
+                }
+                Moment::Skew => {
+                  if count < 3 { f64::NAN } else {
+                    let n = count as f64;
+                    let mean = total / n;
+                    let m2 = (square - total * total / n).max(0.0);
+                    let m3 = cube - 3.0 * mean * square + 2.0 * n * mean * mean * mean;
+                    if m2 <= 0.0 { f64::NAN } else {
+                      let population = (m3 / n) / (m2 / n).powf(1.5);
+                      population * (n * (n - 1.0)).sqrt() / (n - 2.0)
+                    }
+                  }
+                }
+              }
+            };
+          }
+        });
+        return Ok(out.into_pyarray(py).unbind());
+      }
+    }
+    if fixed && matches!(
+      op, alpha_algo::SessionOp::Min | alpha_algo::SessionOp::Max
+        | alpha_algo::SessionOp::Argmin | alpha_algo::SessionOp::Argmax
+        | alpha_algo::SessionOp::ArgminRaw | alpha_algo::SessionOp::ArgmaxRaw
+    ) {
+      // Extrema family: chunk-independent monotonic deques.
+      use std::collections::VecDeque;
+      let is_max = matches!(op, alpha_algo::SessionOp::Max | alpha_algo::SessionOp::Argmax
+        | alpha_algo::SessionOp::ArgmaxRaw);
+      let is_arg = matches!(op, alpha_algo::SessionOp::Argmin | alpha_algo::SessionOp::Argmax
+        | alpha_algo::SessionOp::ArgminRaw | alpha_algo::SessionOp::ArgmaxRaw);
+      let raw = matches!(op, alpha_algo::SessionOp::ArgminRaw | alpha_algo::SessionOp::ArgmaxRaw);
+      let n = values.len();
+      {
+        const CHUNK: usize = 65_536;
+        let mut out = vec![f64::NAN; n];
+        out.par_chunks_mut(CHUNK).enumerate().for_each(|(chunk_index, chunk)| {
+          let chunk_start = chunk_index * CHUNK;
+          let mut deque: VecDeque<usize> = VecDeque::new();
+          let mut count = 0usize;
+          for k in chunk_start.saturating_sub(window)..chunk_start {
+            if !values[k].is_finite() { continue; }
+            count += 1;
+            while let Some(last) = deque.back().copied() {
+              if (is_max && values[last] <= values[k]) || (!is_max && values[last] >= values[k]) {
+                deque.pop_back();
+              } else { break; }
+            }
+            deque.push_back(k);
+          }
+          for (offset, slot) in chunk.iter_mut().enumerate() {
+            let index = chunk_start + offset;
+            let start = index.saturating_sub(window - 1);
+            while deque.front().is_some_and(|i| *i < start) { deque.pop_front(); }
+            if index >= window && values[index - window].is_finite() { count -= 1; }
+            if values[index].is_finite() {
+              count += 1;
+              while let Some(last) = deque.back().copied() {
+                if (is_max && values[last] <= values[index]) || (!is_max && values[last] >= values[index]) {
+                  deque.pop_back();
+                } else { break; }
+              }
+              deque.push_back(index);
+            }
+            let width = (index + 1).min(window);
+            if count < min_periods || (propagate_nan && count < width) { continue; }
+            let Some(best) = deque.front().copied() else { continue };
+            *slot = if !is_arg {
+              values[best]
+            } else {
+              let distance = (index - best) as f64;
+              if raw { (width - 1) as f64 - distance } else if count <= 1 { 0.0 } else { distance / (count - 1) as f64 }
+            };
+          }
+        });
+        return Ok(out.into_pyarray(py).unbind());
+      }
+    }
+    if matches!(
+      op, alpha_algo::SessionOp::Sum | alpha_algo::SessionOp::Mean
+        | alpha_algo::SessionOp::Var | alpha_algo::SessionOp::Std
+        | alpha_algo::SessionOp::Skew
+    ) {
+      // Arbitrary intervals: prefix moments, still O(1) per output.
+      let n = values.len();
+      let mut count = vec![0u64; n + 1];
+      let mut sum = vec![0.0f64; n + 1];
+      let mut sumsq = vec![0.0f64; n + 1];
+      let mut sum3 = vec![0.0f64; n + 1];
+      for (i, value) in values.iter().copied().enumerate() {
+        let finite = value.is_finite();
+        count[i + 1] = count[i] + u64::from(finite);
+        sum[i + 1] = sum[i] + if finite { value } else { 0.0 };
+        sumsq[i + 1] = sumsq[i] + if finite { value * value } else { 0.0 };
+        sum3[i + 1] = sum3[i] + if finite { value * value * value } else { 0.0 };
+      }
+      let mean = matches!(op, alpha_algo::SessionOp::Mean);
+      let variance = matches!(op, alpha_algo::SessionOp::Var | alpha_algo::SessionOp::Std);
+      let std = matches!(op, alpha_algo::SessionOp::Std);
+      let skew = matches!(op, alpha_algo::SessionOp::Skew);
+      let out: Vec<f64> = (0..n).into_par_iter().map(|index| {
+        let start = starts[index] as usize;
+        let end = (ends[index] as usize + 1).min(n);
+        let m = count[end] - count[start];
+        let width = end.saturating_sub(start);
+        if m == 0 || m < min_periods as u64 || (propagate_nan && m < width as u64) { return f64::NAN; }
+        let total = sum[end] - sum[start];
+        if mean { return total / m as f64; }
+        if variance {
+          if m < 2 { return f64::NAN; }
+          let square = sumsq[end] - sumsq[start];
+          let var = ((square - total * total / m as f64) / (m - 1) as f64).max(0.0);
+          return if std { var.sqrt() } else { var };
+        }
+        if skew {
+          if m < 3 { return f64::NAN; }
+          let m = m as f64;
+          let mean = total / m;
+          let square = sumsq[end] - sumsq[start];
+          let cube = sum3[end] - sum3[start];
+          let m2 = (square - total * total / m).max(0.0);
+          let m3 = cube - 3.0 * mean * square + 2.0 * m * mean * mean * mean;
+          if m2 <= 0.0 { return f64::NAN; }
+          let population = (m3 / m) / (m2 / m).powf(1.5);
+          return population * (m * (m - 1.0)).sqrt() / (m - 2.0);
+        }
+        total
+      }).collect();
+      return Ok(out.into_pyarray(py).unbind());
+    }
+    let mut state = alpha_algo::IntervalKernel::new(op)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .with_semantics(min_periods, propagate_nan);
+    Ok(values.iter().copied().zip(starts.iter().copied()).zip(ends.iter().copied())
+      .map(|((value, start), end)| state.update_explicit(start, end, value))
+      .collect::<Vec<_>>().into_pyarray(py).unbind())
+  }
+
+  #[pyfunction]
+  #[pyo3(signature = (x, y, starts, ends, correlation=false, window=None, min_periods=2, propagate_nan=false))]
+  pub fn interval_rolling_pair(
+    py: Python<'_>, x: PyReadonlyArray1<f64>, y: PyReadonlyArray1<f64>,
+    starts: PyReadonlyArray1<u64>, ends: PyReadonlyArray1<u64>,
+    correlation: bool, window: Option<usize>, min_periods: usize, propagate_nan: bool,
+  ) -> PyResult<Py<PyArray1<f64>>> {
+    let x = x.as_slice()?;
+    let y = y.as_slice()?;
+    let starts = starts.as_slice()?;
+    let ends = ends.as_slice()?;
+    if x.len() != y.len() || x.len() != starts.len() || x.len() != ends.len() {
+      return Err(pyo3::exceptions::PyValueError::new_err(
+        "interval_rolling_pair length mismatch"
+      ));
+    }
+    let fixed = window.is_some();
+    let window = window.unwrap_or(1).max(1);
+    if fixed {
+      // PairMoments family: chunk-independent sliding moments.
+      let n = x.len();
+      {
+        const CHUNK: usize = 65_536;
+        let mut out = vec![f64::NAN; n];
+        out.par_chunks_mut(CHUNK).enumerate().for_each(|(chunk_index, chunk)| {
+          let chunk_start = chunk_index * CHUNK;
+          let (mut sx, mut sy) = (0.0f64, 0.0f64);
+          let (mut sxx, mut syy, mut sxy) = (0.0f64, 0.0f64, 0.0f64);
+          let mut count = 0usize;
+          for k in chunk_start.saturating_sub(window)..chunk_start {
+            if x[k].is_finite() && y[k].is_finite() {
+              sx += x[k]; sy += y[k]; sxx += x[k] * x[k];
+              syy += y[k] * y[k]; sxy += x[k] * y[k]; count += 1;
+            }
+          }
+          for (offset, slot) in chunk.iter_mut().enumerate() {
+            let index = chunk_start + offset;
+            if x[index].is_finite() && y[index].is_finite() {
+              sx += x[index]; sy += y[index]; sxx += x[index] * x[index];
+              syy += y[index] * y[index]; sxy += x[index] * y[index]; count += 1;
+            }
+            if index >= window {
+              let k = index - window;
+              if x[k].is_finite() && y[k].is_finite() {
+                sx -= x[k]; sy -= y[k]; sxx -= x[k] * x[k];
+                syy -= y[k] * y[k]; sxy -= x[k] * y[k]; count -= 1;
+              }
+            }
+            let width = (index + 1).min(window);
+            if count < 2 || count < min_periods || (propagate_nan && count < width) {
+              *slot = f64::NAN; continue;
+            }
+            let m = count as f64;
+            let covariance = (sxy - sx * sy / m) / (m - 1.0);
+            *slot = if !correlation {
+              covariance
+            } else {
+              let vx = (sxx - sx * sx / m).max(0.0);
+              let vy = (syy - sy * sy / m).max(0.0);
+              let denom = (vx * vy).sqrt();
+              if denom > 0.0 { (sxy - sx * sy / m) / denom } else { f64::NAN }
+            };
+          }
+        });
+        return Ok(out.into_pyarray(py).unbind());
+      }
+    }
+    let mut state = alpha_algo::PairIntervalState::new(correlation);
+    let _ = (min_periods, propagate_nan);
+    Ok(x.iter().copied().zip(y.iter().copied())
+      .zip(starts.iter().copied()).zip(ends.iter().copied())
+      .map(|(((x, y), start), end)| state.update(start, end, x, y))
+      .collect::<Vec<_>>().into_pyarray(py).unbind())
+  }
+
+  #[pyfunction]
+  pub fn session_rolling_sum(
+    values: Vec<f64>, session_ids: Vec<u32>, lookback_sessions: usize,
+  ) -> PyResult<Vec<f64>> {
+    let ctx = Context::default();
+    ta_session_rolling_sum(&ctx, &values, &session_ids, lookback_sessions)
+      .map_err(|e| e.into())
+  }
+
+  #[pyfunction]
+  pub fn session_rolling_mean(
+    values: Vec<f64>, session_ids: Vec<u32>, lookback_sessions: usize,
+  ) -> PyResult<Vec<f64>> {
+    let ctx = Context::default();
+    ta_session_rolling_mean(&ctx, &values, &session_ids, lookback_sessions)
+      .map_err(|e| e.into())
   }
 
   #[pyfunction]
@@ -907,12 +1322,13 @@ pub struct NativeGroupSession {
   quantile_entry: f64,
   quantile_exit: f64,
   side_mode: i32,
+  force_close_mask: Option<Py<numpy::PyArray2<bool>>>,
 }
 
 #[pymethods]
 impl NativeGroupSession {
   #[new]
-  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0, target_weights=None, threshold_mode=-1, entry_threshold=0.0, exit_threshold=0.0, quantile_entry=0.8, quantile_exit=0.6, side_mode=0))]
+  #[pyo3(signature=(factor, prices, lot_sizes, split_count, group_index, enforce_cash=false, round_to_lot=true, target_scale=1.0, margin_ratio=1.0, cost_method=0, daily_mtm=false, fee_rates=Vec::new(), volume=None, volume_rate=1.0, execution_delay=0, target_weights=None, threshold_mode=-1, entry_threshold=0.0, exit_threshold=0.0, quantile_entry=0.8, quantile_exit=0.6, side_mode=0, force_close_mask=None))]
   fn new(
     py: Python<'_>, factor: Py<numpy::PyArray2<f64>>,
     prices: Py<numpy::PyArray2<f64>>, lot_sizes: Vec<f64>,
@@ -923,6 +1339,7 @@ impl NativeGroupSession {
     target_weights: Option<Py<numpy::PyArray2<f64>>>, threshold_mode: i32,
     entry_threshold: f64, exit_threshold: f64, quantile_entry: f64,
     quantile_exit: f64, side_mode: i32,
+    force_close_mask: Option<Py<numpy::PyArray2<bool>>>,
   ) -> PyResult<Self> {
     let factor_view = factor.bind(py).readonly();
     let price_view = prices.bind(py).readonly();
@@ -933,7 +1350,7 @@ impl NativeGroupSession {
     if split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay, target_weights, threshold_mode, entry_threshold, exit_threshold, quantile_entry, quantile_exit, side_mode })
+    Ok(Self { factor, prices, lot_sizes, split_count, group_index, enforce_cash, round_to_lot, target_scale, margin_ratio, cost_method, daily_mtm, fee_rates, volume, volume_rate, execution_delay, target_weights, threshold_mode, entry_threshold, exit_threshold, quantile_entry, quantile_exit, side_mode, force_close_mask })
   }
 
   fn run_event_driven(
@@ -953,6 +1370,8 @@ impl NativeGroupSession {
     let prices = price_view.as_array();
     let volume_view = self.volume.as_ref().map(|value| value.bind(py).readonly());
     let target_view = self.target_weights.as_ref().map(|value| value.bind(py).readonly());
+    let force_close_view = self.force_close_mask.as_ref().map(|value| value.bind(py).readonly());
+    let force_close = force_close_view.as_ref().map(|value| value.as_array());
     let volume = volume_view.as_ref().map(|value| value.as_array());
     let (rows, columns) = factor.dim();
     let mut positions = vec![0.0f64; columns];
@@ -1013,15 +1432,18 @@ impl NativeGroupSession {
         if event_row != row { break; }
         queue.pop();
         if kind == 2 {
-          let mut ranked: Vec<usize> = (0..columns).collect();
+          let mut ranked: Vec<usize> = (0..columns)
+            .filter(|&index| factor[[signal_offset, index]].is_finite())
+            .collect();
           ranked.sort_by(|&left, &right| {
             factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
               .unwrap_or(std::cmp::Ordering::Equal).then_with(|| left.cmp(&right))
           });
-          let bucket_size = columns as f64 / self.split_count as f64;
+          let eligible = ranked.len();
+          let bucket_size = eligible as f64 / self.split_count as f64;
           let start = (self.group_index as f64 * bucket_size).round_ties_even() as usize;
           let end = (((self.group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
-          let members = &ranked[start..end.min(columns)];
+          let members = &ranked[start..end.min(eligible)];
           let current_equity = if self.margin_ratio < 1.0 {
             cash + fast_sum(margins.iter().copied())
           } else {
@@ -1071,6 +1493,8 @@ impl NativeGroupSession {
             } else if let Some(values) = &target_weights {
               values[[signal_offset, index]]
             } else if members.contains(&index) { group_weight } else { 0.0 };
+            let force_close_here = force_close.map(|mask| mask[[signal_offset, index]]).unwrap_or(false);
+            let weight = if force_close_here { 0.0 } else { weight };
             row_weight[index] = weight;
             let target = weight * current_equity * self.target_scale / prices[[if delayed { row } else { row - 1 }, index]];
             let target = if self.round_to_lot { (target / lot).floor() * lot } else { target };
@@ -1366,16 +1790,19 @@ impl NativeGroupSession {
     let mut order_id = 0u64;
     for row in 1..rows {
       let signal_offset = row - 1;
-      let mut ranked: Vec<usize> = (0..columns).collect();
+      let mut ranked: Vec<usize> = (0..columns)
+        .filter(|&index| factor[[signal_offset, index]].is_finite())
+        .collect();
       ranked.sort_by(|&left, &right| {
         factor[[signal_offset, right]].partial_cmp(&factor[[signal_offset, left]])
           .unwrap_or(std::cmp::Ordering::Equal)
           .then_with(|| left.cmp(&right))
       });
-      let bucket_size = columns as f64 / self.split_count as f64;
+      let eligible = ranked.len();
+      let bucket_size = eligible as f64 / self.split_count as f64;
       let start = (self.group_index as f64 * bucket_size).round_ties_even() as usize;
       let end = (((self.group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
-      let members = &ranked[start..end.min(columns)];
+      let members = &ranked[start..end.min(eligible)];
       let mut current_equity = cash;
       for column in 0..columns {
         current_equity += positions[column] * prices[[row - 1, column]];
@@ -1641,86 +2068,6 @@ impl LongShortKernel {
 }
 
 #[pyclass(unsendable)]
-pub struct TermStructureFactorKernel;
-
-#[pymethods]
-impl TermStructureFactorKernel {
-  #[new]
-  fn new() -> Self { Self }
-
-  fn carry_matrix(
-    &self,
-    prices: Vec<Vec<f64>>,
-    near_indices: Vec<usize>,
-    far_indices: Vec<usize>,
-    lookback: usize,
-  ) -> PyResult<Vec<Vec<f64>>> {
-    let rows = prices.len();
-    let product_count = near_indices.len().min(far_indices.len());
-    let lookback = lookback.max(1);
-    let mut output = vec![vec![f64::NAN; product_count]; rows];
-    for row in 0..rows {
-      if row + 1 < lookback { continue; }
-      for product in 0..product_count {
-        let near = near_indices[product];
-        let far = far_indices[product];
-        let mut total = 0.0f64;
-        let mut valid = true;
-        for offset in 0..lookback {
-          let index = row - offset;
-          let near_price = prices[index][near];
-          let far_price = prices[index][far];
-          if !near_price.is_finite() || !far_price.is_finite() || far_price == 0.0 {
-            valid = false;
-            break;
-          }
-          total += near_price / far_price - 1.0;
-        }
-        if valid { output[row][product] = total / lookback as f64; }
-      }
-    }
-    Ok(output)
-  }
-
-  fn carry_matrix_paths(
-    &self,
-    prices: Vec<Vec<f64>>,
-    near_paths: Vec<Vec<usize>>,
-    far_paths: Vec<Vec<usize>>,
-    lookback: usize,
-  ) -> PyResult<Vec<Vec<f64>>> {
-    let rows = prices.len();
-    let product_count = near_paths.len().min(far_paths.len());
-    let lookback = lookback.max(1);
-    let mut output = vec![vec![f64::NAN; product_count]; rows];
-    for product in 0..product_count {
-      let near_path = &near_paths[product];
-      let far_path = &far_paths[product];
-      if near_path.len() < rows || far_path.len() < rows { continue; }
-      for row in 0..rows {
-        if row + 1 < lookback { continue; }
-        let mut total = 0.0f64;
-        let mut valid = true;
-        for offset in 0..lookback {
-          let index = row - offset;
-          let near = near_path[index];
-          let far = far_path[index];
-          let near_price = prices[index][near];
-          let far_price = prices[index][far];
-          if !near_price.is_finite() || !far_price.is_finite() || far_price == 0.0 {
-            valid = false;
-            break;
-          }
-          total += near_price / far_price - 1.0;
-        }
-        if valid { output[row][product] = total / lookback as f64; }
-      }
-    }
-    Ok(output)
-  }
-}
-
-#[pyclass(unsendable)]
 pub struct LifecycleKernel;
 
 #[pymethods]
@@ -1792,16 +2139,19 @@ impl GroupKernel {
     if prices.len() != count || split_count <= 0 || group_index < 0 || group_index >= split_count {
       return Err(pyo3::exceptions::PyValueError::new_err("invalid group selection"));
     }
-    let mut ranked: Vec<usize> = (0..count).collect();
+    let mut ranked: Vec<usize> = (0..count)
+      .filter(|&index| values[index].is_finite() && prices[index] > 0.0)
+      .collect();
     ranked.sort_by(|&left, &right| {
       values[right].partial_cmp(&values[left])
         .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| left.cmp(&right))
     });
-    let bucket_size = count as f64 / split_count as f64;
+    let eligible = ranked.len();
+    let bucket_size = eligible as f64 / split_count as f64;
     let start = (group_index as f64 * bucket_size).round_ties_even() as usize;
     let end = (((group_index + 1) as f64) * bucket_size).round_ties_even() as usize;
-    let members = &ranked[start..end.min(count)];
+    let members = &ranked[start..end.min(eligible)];
     let weight = if members.is_empty() { 0.0 } else { 1.0 / members.len() as f64 };
     let mut weights = vec![0.0f64; count];
     for index in 0..count {
@@ -2610,6 +2960,174 @@ impl EventHeap {
   }
 }
 
+#[pyclass]
+struct IntervalPairState {
+  inner: alpha_algo::PairIntervalState,
+}
+
+#[pymethods]
+impl IntervalPairState {
+  #[new]
+  #[pyo3(signature = (correlation=false))]
+  fn new(correlation: bool) -> Self {
+    Self { inner: alpha_algo::PairIntervalState::new(correlation) }
+  }
+
+  fn update(&mut self, start_index: u64, end_index: u64, x: f64, y: f64) -> f64 {
+    self.inner.update(start_index, end_index, x, y)
+  }
+}
+
+fn plan_linreg(values: &[f64], window: usize, metric: &str, min: usize, prop: bool) -> Vec<f64> {
+  let window = window.max(1);
+  let mut out = vec![f64::NAN; values.len()];
+  let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+  let mut count = 0usize;
+  for index in 0..values.len() {
+    let x = index as f64;
+    let y = values[index];
+    if y.is_finite() {
+      sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; count += 1;
+    }
+    if index >= window {
+      let old_index = index - window;
+      let old_x = old_index as f64;
+      let old_y = values[old_index];
+      if old_y.is_finite() {
+        sx -= old_x; sy -= old_y; sxx -= old_x * old_x;
+        syy -= old_y * old_y; sxy -= old_x * old_y; count -= 1;
+      }
+    }
+    let width = (index + 1).min(window);
+    if count < min.max(3) || (prop && count < width) { continue; }
+    let n = count as f64;
+    let cxx = sxx - sx * sx / n;
+    if cxx <= 0.0 { continue; }
+    let cyy = syy - sy * sy / n;
+    let cxy = sxy - sx * sy / n;
+    let slope = cxy / cxx;
+    let intercept = (sy - slope * sx) / n;
+    let sse = (syy - intercept * sy - slope * sxy).max(0.0);
+    out[index] = match metric {
+      "linreg_slope" => slope,
+      "linreg_r2" => if cyy <= 0.0 { f64::NAN } else { 1.0 - sse / cyy },
+      "linreg_resid_std" => if count < 3 { f64::NAN } else { (sse / (n - 2.0)).sqrt() },
+      "linreg_tstat" => {
+        if count < 3 { f64::NAN } else {
+          let se = ((sse / (n - 2.0)) / cxx).sqrt();
+          if se > 0.0 { slope / se } else { f64::NAN }
+        }
+      }
+      _ => f64::NAN,
+    };
+  }
+  out
+}
+
+#[pyclass]
+struct FactorPlanState {
+  inner: alpha_algo::FactorPlanKernel,
+}
+
+#[pymethods]
+impl FactorPlanState {
+  #[new]
+  #[pyo3(signature = (json, products))]
+  fn new(json: &str, products: usize) -> PyResult<Self> {
+    Ok(Self {
+      inner: alpha_algo::FactorPlanKernel::from_spec_json(json, products)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+    })
+  }
+
+  fn update(&mut self, py: Python<'_>, values: numpy::PyReadonlyArray1<f64>) -> PyResult<Py<numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    Ok(self.inner.update(values.as_slice()?)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .into_pyarray(py).unbind())
+  }
+
+  fn update_with_curves(&mut self, py: Python<'_>, timestamp_ns: i64,
+                        values: numpy::PyReadonlyArray1<f64>,
+                        curves: Vec<Vec<(f64, f64)>>) -> PyResult<Py<numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    Ok(self.inner.update_with_curves(timestamp_ns, values.as_slice()?, &curves)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .into_pyarray(py).unbind())
+  }
+
+  fn update_at(&mut self, py: Python<'_>, timestamp_ns: i64, values: numpy::PyReadonlyArray1<f64>) -> PyResult<Py<numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    Ok(self.inner.update_at(timestamp_ns, values.as_slice()?)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .into_pyarray(py).unbind())
+  }
+
+  #[pyo3(signature = (timestamp_ns, values, boundaries, curves=None))]
+  fn update_context(&mut self, py: Python<'_>, timestamp_ns: i64,
+                    values: numpy::PyReadonlyArray1<f64>, boundaries: numpy::PyReadonlyArray1<u8>,
+                    curves: Option<Vec<Vec<(f64, f64)>>>) -> PyResult<Py<numpy::PyArray1<f64>>> {
+    use numpy::IntoPyArray;
+    let mut result = Vec::new();
+    self.inner.update_into_context(timestamp_ns, values.as_slice()?, boundaries.as_slice()?, &curves.unwrap_or_default(), &mut result)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(result.into_pyarray(py).unbind())
+  }
+}
+
+#[pyclass]
+struct IntervalState {
+  inner: alpha_algo::IntervalKernel,
+}
+
+#[pymethods]
+impl IntervalState {
+  #[new]
+  #[pyo3(signature = (op="mean", quantile=None, min_periods=1, propagate_nan=false))]
+  fn new(op: &str, quantile: Option<f64>, min_periods: usize, propagate_nan: bool) -> PyResult<Self> {
+    use alpha_algo::SessionOp;
+    let op = match op {
+      "sum" => SessionOp::Sum, "mean" => SessionOp::Mean,
+      "var" => SessionOp::Var, "std" => SessionOp::Std,
+      "min" => SessionOp::Min, "max" => SessionOp::Max,
+      "skew" => SessionOp::Skew, "argmin" => SessionOp::Argmin,
+      "argmax" => SessionOp::Argmax, "rank" => SessionOp::Rank,
+      "mad" => SessionOp::Mad,
+      "median" | "quantile" => SessionOp::Quantile(quantile.unwrap_or(0.5)),
+      other => return Err(pyo3::exceptions::PyValueError::new_err(
+        format!("unsupported interval op: {other}")
+      )),
+    };
+    let inner = alpha_algo::SessionWindowState::new_explicit(op)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .with_semantics(min_periods, propagate_nan);
+    Ok(Self { inner })
+  }
+
+  fn update(&mut self, start_index: u64, end_index: u64, value: f64) -> f64 {
+    self.inner.update_explicit(start_index, end_index, value)
+  }
+}
+
+#[pyclass]
+struct EmaState {
+  inner: alpha_algo::EmaState,
+}
+
+#[pymethods]
+impl EmaState {
+  #[new]
+  #[pyo3(signature = (span, min_periods=1, propagate_nan=true))]
+  fn new(span: usize, min_periods: usize, propagate_nan: bool) -> PyResult<Self> {
+    let inner = alpha_algo::EmaState::new(span)
+      .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+      .with_semantics(min_periods, propagate_nan);
+    Ok(Self { inner })
+  }
+
+  fn update(&mut self, value: f64) -> f64 { self.inner.update(value) }
+}
+
 #[pymodule]
 fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   use algo_impl::*;
@@ -2617,6 +3135,13 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   pyo3_log::init();
 
   m.add_function(wrap_pyfunction!(ema, m)?)?;
+  m.add_function(wrap_pyfunction!(interval_ema, m)?)?;
+  m.add_function(wrap_pyfunction!(bar_since, m)?)?;
+  m.add_function(wrap_pyfunction!(cross_sectional, m)?)?;
+  m.add_function(wrap_pyfunction!(interval_rolling, m)?)?;
+  m.add_function(wrap_pyfunction!(interval_rolling_pair, m)?)?;
+  m.add_function(wrap_pyfunction!(session_rolling_sum, m)?)?;
+  m.add_function(wrap_pyfunction!(session_rolling_mean, m)?)?;
   m.add_function(wrap_pyfunction!(set_ctx, m)?)?;
   m.add_class::<EventHeap>()?;
   m.add_class::<MarketDataMatrix>()?;
@@ -2630,10 +3155,521 @@ fn _algo(m: &Bound<'_, PyModule>) -> PyResult<()> {
   m.add_class::<OrderLifecycleBatch>()?;
   m.add_class::<OrderConstructionKernel>()?;
   m.add_class::<ThresholdKernel>()?;
+  m.add_class::<EmaState>()?;
+  m.add_class::<IntervalState>()?;
+  m.add_class::<FactorPlanState>()?;
+  m.add_class::<IntervalPairState>()?;
+  m.add_class::<BatchPlan>()?;
   m.add_class::<GroupKernel>()?;
   m.add_class::<TermCarryKernel>()?;
   m.add_class::<LifecycleKernel>()?;
-  m.add_class::<TermStructureFactorKernel>()?;
+#[pyclass(unsendable)]
+pub struct PanelPlanStream {
+  ops: Vec<f64>,
+  params: Vec<f64>,
+  aux: Vec<f64>,
+  slot_count: usize,
+  leaf_count: usize,
+  output_slot: usize,
+  product_count: usize,
+  tiebreak: Vec<f64>,
+  values: Vec<Vec<f64>>,
+  histories: Vec<Vec<std::collections::VecDeque<f64>>>,
+}
+
+#[pymethods]
+impl PanelPlanStream {
+  #[new]
+  fn new(
+    ops: Vec<f64>, params: Vec<f64>, aux: Vec<f64>,
+    slot_count: usize, leaf_count: usize, output_slot: usize,
+    product_count: usize,
+    tiebreak: Vec<f64>,
+  ) -> Self {
+    let history_count = ops.len().div_ceil(8);
+    Self {
+      ops, params, aux, slot_count, leaf_count, output_slot, product_count, tiebreak,
+      values: vec![vec![f64::NAN; slot_count]; product_count],
+      histories: vec![vec![std::collections::VecDeque::new(); history_count]; product_count],
+    }
+  }
+
+  fn on_bar(&mut self, leaves: Vec<Vec<f64>>) -> PyResult<Vec<f64>> {
+    if leaves.len() != self.product_count {
+      return Err(pyo3::exceptions::PyValueError::new_err("panel product count mismatch"));
+    }
+    for product in 0..self.product_count {
+      if leaves[product].len() != self.leaf_count {
+        return Err(pyo3::exceptions::PyValueError::new_err("panel leaf count mismatch"));
+      }
+      for index in 0..self.leaf_count {
+        self.values[product][index] = leaves[product][index];
+      }
+    }
+    let op_count = self.ops.len() / 8;
+    for op in 0..op_count {
+      let base = op * 8;
+      let code = self.ops[base] as usize;
+      let out = self.ops[base + 1] as usize;
+      let slot = |position: usize| -> Option<usize> {
+        let value = self.ops[base + position];
+        if value < 0.0 { None } else { Some(value as usize) }
+      };
+      let a = slot(2);
+      let b = slot(3);
+      let pbase = op * 8;
+      let window = self.params[pbase] as usize;
+      let min_count = self.params[pbase + 1] as usize;
+      let periods = self.params[pbase + 3] as i64;
+      if (75..=77).contains(&code) {
+        let signal_slot = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("residualize signal missing"))?;
+        let exposure_count = code - 74;
+        let exposure_slots = [b, slot(4), slot(5)];
+        for product in 0..self.product_count {
+          self.values[product][out] = f64::NAN;
+        }
+        let mask_slot_raw = self.ops[base + 6];
+        let mask_slot = if mask_slot_raw < 0.0 { None } else { Some(mask_slot_raw as usize) };
+        let mut ys: Vec<f64> = Vec::new();
+        let mut rows_x: Vec<[f64; 3]> = Vec::new();
+        let mut positions: Vec<usize> = Vec::new();
+        for product in 0..self.product_count {
+          let signal = self.values[product][signal_slot];
+          let eligible = mask_slot.map(|slot| self.values[product][slot] > 0.0).unwrap_or(true);
+          if !eligible || !signal.is_finite() { continue; }
+          let mut row = [0.0f64; 3];
+          let mut ok = true;
+          for e in 0..exposure_count {
+            let Some(slot) = exposure_slots[e] else { ok = false; break; };
+            let value = self.values[product][slot];
+            if !value.is_finite() { ok = false; break; }
+            row[e] = value;
+          }
+          if !ok { continue; }
+          ys.push(signal);
+          rows_x.push(row);
+          positions.push(product);
+        }
+        let k = exposure_count;
+        if ys.len() <= k + 1 { continue; }
+        let size = k + 1;
+        let mut xtx = vec![vec![0.0f64; size]; size];
+        let mut xty = vec![0.0f64; size];
+        for (index, y) in ys.iter().enumerate() {
+          let mut row = [0.0f64; 4];
+          row[0] = 1.0;
+          for j in 0..k { row[j + 1] = rows_x[index][j]; }
+          for a_index in 0..size {
+            xty[a_index] += row[a_index] * y;
+            for b_index in 0..size {
+              xtx[a_index][b_index] += row[a_index] * row[b_index];
+            }
+          }
+        }
+        let mut singular = false;
+        for col in 0..size {
+          let mut pivot = col;
+          for row in col + 1..size {
+            if xtx[row][col].abs() > xtx[pivot][col].abs() { pivot = row; }
+          }
+          if !(xtx[pivot][col].abs() > 1e-18) { singular = true; break; }
+          xtx.swap(col, pivot);
+          xty.swap(col, pivot);
+          let diag = xtx[col][col];
+          for b_index in col..size { xtx[col][b_index] /= diag; }
+          xty[col] /= diag;
+          for row in 0..size {
+            if row == col { continue; }
+            let factor = xtx[row][col];
+            for b_index in col..size { xtx[row][b_index] -= factor * xtx[col][b_index]; }
+            xty[row] -= factor * xty[col];
+          }
+        }
+        if singular { continue; }
+        for (index, product) in positions.iter().enumerate() {
+          let mut fitted = xty[0];
+          for j in 0..k { fitted += xty[j + 1] * rows_x[index][j]; }
+          self.values[*product][out] = ys[index] - fitted;
+        }
+        continue;
+      }
+      if code == 74 {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("group input missing"))?;
+        let mask_slot = b.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("group mask missing"))?;
+        let aux_offset = self.params[pbase + 6] as usize;
+        let aux_len = self.params[pbase + 7] as usize;
+        let category = &self.aux[aux_offset..aux_offset + aux_len];
+        let operation = self.params[pbase] as usize;
+        for product in 0..self.product_count {
+          self.values[product][out] = f64::NAN;
+        }
+        let max_id = category.iter()
+          .map(|value| if value.is_finite() && *value >= 0.0 { *value as usize } else { 0 })
+          .max().unwrap_or(0);
+        for id in 0..=max_id {
+          let mut values: Vec<f64> = Vec::new();
+          let mut positions: Vec<usize> = Vec::new();
+          for product in 0..self.product_count {
+            if product >= category.len() { continue; }
+            let category_id = if category[product].is_finite() && category[product] >= 0.0 {
+              category[product] as usize
+            } else { usize::MAX };
+            if category_id != id { continue; }
+            let value = self.values[product][input];
+            let mask = self.values[product][mask_slot];
+            if !(value.is_finite() && mask.is_finite() && mask > 0.0) { continue; }
+            values.push(value);
+            positions.push(product);
+          }
+          if values.is_empty() { continue; }
+          let count = values.len();
+          if operation == 0 {
+            let mut order: Vec<usize> = (0..count).collect();
+            order.sort_by(|left, right| values[*left].partial_cmp(&values[*right]).unwrap_or(std::cmp::Ordering::Equal));
+            let mut index = 0usize;
+            while index < order.len() {
+              let mut end = index + 1;
+              while end < order.len() && values[order[end]] == values[order[index]] { end += 1; }
+              let rank = ((index + 1) as f64 + end as f64) / 2.0;
+              for position in index..end {
+                self.values[positions[order[position]]][out] = rank / count as f64 - 0.5;
+              }
+              index = end;
+            }
+          } else if operation == 1 {
+            if count < 2 { continue; }
+            let mean = values.iter().sum::<f64>() / count as f64;
+            let variance = values.iter().map(|value| { let d = value - mean; d * d }).sum::<f64>() / (count - 1) as f64;
+            let std = variance.sqrt();
+            if std.is_nan() { continue; }
+            for (position, value) in positions.iter().zip(values.iter()) {
+              self.values[*position][out] = if std > 0.0 { (value - mean) / std } else { 0.0 };
+            }
+          } else {
+            let mean = values.iter().sum::<f64>() / count as f64;
+            for (position, value) in positions.iter().zip(values.iter()) {
+              self.values[*position][out] = value - mean;
+            }
+          }
+        }
+        continue;
+      }
+      if code == 73 {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("ordinal input missing"))?;
+        let mask_slot = b.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("ordinal mask missing"))?;
+        let ascending = self.params[pbase] != 0.0;
+        let mut eligible: Vec<usize> = Vec::new();
+        for product in 0..self.product_count {
+          let value = self.values[product][input];
+          let mask = self.values[product][mask_slot];
+          if value.is_finite() && mask.is_finite() && mask > 0.0 {
+            eligible.push(product);
+          }
+        }
+        for product in 0..self.product_count {
+          self.values[product][out] = f64::NAN;
+        }
+        eligible.sort_by(|left, right| {
+          let left_value = self.values[*left][input];
+          let right_value = self.values[*right][input];
+          let base = left_value.partial_cmp(&right_value).unwrap_or(std::cmp::Ordering::Equal);
+          let base = if ascending { base } else { base.reverse() };
+          if base == std::cmp::Ordering::Equal {
+            self.tiebreak[*left].partial_cmp(&self.tiebreak[*right]).unwrap_or(std::cmp::Ordering::Equal)
+          } else {
+            base
+          }
+        });
+        for (position, product) in eligible.iter().enumerate() {
+          self.values[*product][out] = (position + 1) as f64;
+        }
+        continue;
+      }
+      if code == 70 || code == 71 || code == 72 {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("cross input missing"))?;
+        let mask = if code == 71 {
+          Some(b.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("cross mask missing"))?)
+        } else { None };
+        let mut entries: Vec<(usize, f64)> = Vec::new();
+        for product in 0..self.product_count {
+          let value = self.values[product][input];
+          if !value.is_finite() { continue; }
+          if let Some(mask_slot) = mask {
+            let eligible = self.values[product][mask_slot];
+            if !(eligible.is_finite() && eligible > 0.0) { continue; }
+          }
+          entries.push((product, value));
+        }
+        for product in 0..self.product_count {
+          self.values[product][out] = f64::NAN;
+        }
+        if entries.is_empty() { continue; }
+        if code == 72 {
+          let count = entries.len();
+          let mean = entries.iter().map(|(_, value)| *value).sum::<f64>() / count as f64;
+          if count < 2 { continue; }
+          let variance = entries.iter()
+            .map(|(_, value)| { let d = value - mean; d * d })
+            .sum::<f64>() / (count - 1) as f64;
+          let std = variance.sqrt();
+          if !std.is_finite() || std == 0.0 { continue; }
+          for (product, value) in entries.iter() {
+            self.values[*product][out] = (value - mean) / std;
+          }
+          continue;
+        }
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        order.sort_by(|left, right| {
+          entries[*left].1.partial_cmp(&entries[*right].1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let count = entries.len() as f64;
+        let mut index = 0usize;
+        while index < order.len() {
+          let mut end = index + 1;
+          while end < order.len() && entries[order[end]].1 == entries[order[index]].1 {
+            end += 1;
+          }
+          let rank = ((index + 1) as f64 + end as f64) / 2.0;
+          for position in index..end {
+            let product = entries[order[position]].0;
+            self.values[product][out] = rank / count - 0.5;
+          }
+          index = end;
+        }
+        continue;
+      }
+      for product in 0..self.product_count {
+        if code == 2 {
+          self.values[product][out] = self.params[pbase + 4];
+        } else if code == 1 {
+          let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("shift input missing"))?;
+          let history = &mut self.histories[product][op];
+          history.push_back(self.values[product][input]);
+          let keep = periods.max(0) as usize + 1;
+          while history.len() > keep { history.pop_front(); }
+          self.values[product][out] = if periods >= 0 && history.len() > periods as usize {
+            history[0]
+          } else { f64::NAN };
+        } else if (10..=17).contains(&code) {
+          let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unary input missing"))?;
+          self.values[product][out] = plan_unary_value(code, self.values[product][input]);
+        } else if (20..=26).contains(&code) || (100..=107).contains(&code) {
+          let left = a.map(|index| self.values[product][index]).unwrap_or(self.params[pbase + 4]);
+          let right = b.map(|index| self.values[product][index]).unwrap_or(self.params[pbase + 5]);
+          self.values[product][out] = plan_binary_value(code, left, right);
+        } else if code == 90 {
+          let input_count = self.params[pbase + 4] as usize;
+          let node_count = self.params[pbase + 5] as usize;
+          let offset = self.params[pbase + 6] as usize;
+          let length = self.params[pbase + 7] as usize;
+          let program = &self.aux[offset..offset + length];
+          let mut inputs: Vec<f64> = Vec::with_capacity(input_count);
+          for index in 0..input_count {
+            let raw = program[2 * index];
+            inputs.push(if raw < 0.0 { program[2 * index + 1] } else { self.values[product][raw as usize] });
+          }
+          let nodes_base = 2 * input_count;
+          let mut registers = vec![f64::NAN; node_count];
+          for node in 0..node_count {
+            let row = nodes_base + 4 * node;
+            let node_code = program[row] as usize;
+            let src1 = program[row + 2] as usize;
+            let src2 = program[row + 3] as usize;
+            let resolve = |source: usize| -> f64 {
+              if source < input_count { inputs[source] } else { registers[source - input_count] }
+            };
+            let left = resolve(src1);
+            let right = resolve(src2);
+            registers[node] = if (10..=17).contains(&node_code) {
+              plan_unary_value(node_code, left)
+            } else {
+              plan_binary_value(node_code, left, right)
+            };
+          }
+          self.values[product][out] = registers[node_count - 1];
+        } else if (30..=35).contains(&code) {
+          let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("rolling input missing"))?;
+          let raw = self.values[product][input];
+          let history = &mut self.histories[product][op];
+          history.push_back(raw);
+          while history.len() > window { history.pop_front(); }
+          let finite: Vec<f64> = history.iter().copied().filter(|value| value.is_finite()).collect();
+          self.values[product][out] = if finite.len() < min_count { f64::NAN } else {
+            match code {
+              30 => finite.iter().sum::<f64>() / finite.len() as f64,
+              31 | 32 => {
+                if finite.len() < 2 { f64::NAN } else {
+                  let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+                  let variance = finite.iter().map(|value| (value - mean) * (value - mean)).sum::<f64>()
+                    / (finite.len() - 1) as f64;
+                  if code == 31 { variance.sqrt() } else { variance }
+                }
+              }
+              33 => finite.iter().copied().fold(f64::INFINITY, f64::min),
+              34 => finite.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+              _ => finite.iter().sum::<f64>(),
+            }
+          };
+        } else {
+          return Err(pyo3::exceptions::PyValueError::new_err(format!("unsupported panel plan op {code}")));
+        }
+      }
+    }
+    Ok((0..self.product_count).map(|product| self.values[product][self.output_slot]).collect())
+  }
+}
+
+#[pyclass(unsendable)]
+pub struct PlanStream {
+  ops: Vec<f64>,
+  params: Vec<f64>,
+  aux: Vec<f64>,
+  slot_count: usize,
+  leaf_count: usize,
+  output_slot: usize,
+  values: Vec<f64>,
+  histories: Vec<std::collections::VecDeque<f64>>,
+}
+
+fn plan_binary_value(code: usize, a: f64, b: f64) -> f64 {
+  match code {
+    20 => a + b, 21 => a - b, 22 => a * b, 23 => a / b, 24 => a.powf(b),
+    25 => if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) },
+    26 => if a.is_nan() || b.is_nan() { f64::NAN } else { a.min(b) },
+    100 => if a > b { 1.0 } else { 0.0 },
+    101 => if a < b { 1.0 } else { 0.0 },
+    102 => if a >= b { 1.0 } else { 0.0 },
+    103 => if a <= b { 1.0 } else { 0.0 },
+    104 => if a == b { 1.0 } else { 0.0 },
+    105 => if a != b { 1.0 } else { 0.0 },
+    106 => if a != 0.0 && b != 0.0 { 1.0 } else { 0.0 },
+    107 => if a != 0.0 || b != 0.0 { 1.0 } else { 0.0 },
+    _ => f64::NAN,
+  }
+}
+
+fn plan_unary_value(code: usize, value: f64) -> f64 {
+  match code {
+    10 => -value, 11 => value.abs(), 12 => value.ln(), 13 => value.sqrt(),
+    14 => value.tanh(), 15 => value.exp(),
+    16 => if value.is_nan() { f64::NAN } else if value > 0.0 { 1.0 } else if value < 0.0 { -1.0 } else { 0.0 },
+    17 => if value == 0.0 { 1.0 } else { 0.0 },
+    _ => f64::NAN,
+  }
+}
+
+#[pymethods]
+impl PlanStream {
+  #[new]
+  fn new(
+    ops: Vec<f64>, params: Vec<f64>, aux: Vec<f64>,
+    slot_count: usize, leaf_count: usize, output_slot: usize,
+  ) -> Self {
+    let history_count = ops.len().div_ceil(8);
+    Self {
+      ops, params, aux, slot_count, leaf_count, output_slot,
+      values: vec![f64::NAN; slot_count],
+      histories: vec![std::collections::VecDeque::new(); history_count],
+    }
+  }
+
+  fn on_bar(&mut self, leaves: Vec<f64>) -> PyResult<f64> {
+    if leaves.len() != self.leaf_count { return Err(pyo3::exceptions::PyValueError::new_err("leaf count mismatch")); }
+    for index in 0..self.leaf_count { self.values[index] = leaves[index]; }
+    let op_count = self.ops.len() / 8;
+    for op in 0..op_count {
+      let base = op * 8;
+      let code = self.ops[base] as usize;
+      let out = self.ops[base + 1] as usize;
+      let slot = |position: usize| -> Option<usize> {
+        let value = self.ops[base + position];
+        if value < 0.0 { None } else { Some(value as usize) }
+      };
+      let a = slot(2); let b = slot(3); let c = slot(4); let d = slot(5); let e = slot(6);
+      let pbase = op * 8;
+      let window = self.params[pbase] as usize;
+      let min_count = self.params[pbase + 1] as usize;
+      let periods = self.params[pbase + 3] as i64;
+      if code == 2 {
+        self.values[out] = self.params[pbase + 4];
+      } else if code == 1 {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("shift input missing"))?;
+        let history = &mut self.histories[op];
+        history.push_back(self.values[input]);
+        let keep = periods.max(0) as usize + 1;
+        while history.len() > keep { history.pop_front(); }
+        self.values[out] = if periods >= 0 && history.len() > periods as usize { history[0] } else { f64::NAN };
+      } else if (10..=17).contains(&code) {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unary input missing"))?;
+        self.values[out] = plan_unary_value(code, self.values[input]);
+      } else if (20..=26).contains(&code) || (100..=107).contains(&code) {
+        let left = a.map(|index| self.values[index]).unwrap_or(self.params[pbase + 4]);
+        let right = b.map(|index| self.values[index]).unwrap_or(self.params[pbase + 5]);
+        self.values[out] = plan_binary_value(code, left, right);
+      } else if code == 90 {
+        let input_count = self.params[pbase + 4] as usize;
+        let node_count = self.params[pbase + 5] as usize;
+        let offset = self.params[pbase + 6] as usize;
+        let length = self.params[pbase + 7] as usize;
+        let program = &self.aux[offset..offset + length];
+        let mut inputs: Vec<f64> = Vec::with_capacity(input_count);
+        for index in 0..input_count {
+          let raw = program[2 * index];
+          inputs.push(if raw < 0.0 { program[2 * index + 1] } else { self.values[raw as usize] });
+        }
+        let nodes_base = 2 * input_count;
+        let mut registers = vec![f64::NAN; node_count];
+        for node in 0..node_count {
+          let row = nodes_base + 4 * node;
+          let node_code = program[row] as usize;
+          let src1 = program[row + 2] as usize;
+          let src2 = program[row + 3] as usize;
+          let resolve = |source: usize| -> f64 {
+            if source < input_count { inputs[source] } else { registers[source - input_count] }
+          };
+          let left = resolve(src1);
+          let right = resolve(src2);
+          registers[node] = if (10..=17).contains(&node_code) {
+            plan_unary_value(node_code, left)
+          } else {
+            plan_binary_value(node_code, left, right)
+          };
+        }
+        self.values[out] = registers[node_count - 1];
+      } else if (30..=35).contains(&code) {
+        let input = a.ok_or_else(|| pyo3::exceptions::PyValueError::new_err("rolling input missing"))?;
+        let raw = self.values[input];
+        let history = &mut self.histories[op];
+        history.push_back(raw);
+        while history.len() > window { history.pop_front(); }
+        let finite: Vec<f64> = history.iter().copied().filter(|value| value.is_finite()).collect();
+        self.values[out] = if finite.len() < min_count { f64::NAN } else {
+          match code {
+            30 => finite.iter().sum::<f64>() / finite.len() as f64,
+            31 | 32 => {
+              if finite.len() < 2 { f64::NAN } else {
+                let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+                let variance = finite.iter().map(|value| (value - mean) * (value - mean)).sum::<f64>()
+                  / (finite.len() - 1) as f64;
+                if code == 31 { variance.sqrt() } else { variance }
+              }
+            }
+            33 => finite.iter().copied().fold(f64::INFINITY, f64::min),
+            34 => finite.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            _ => finite.iter().sum::<f64>(),
+          }
+        };
+      } else {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!("unsupported plan op {code}")));
+      }
+      let _ = (c, d, e);
+    }
+    Ok(self.values[self.output_slot])
+  }
+}
+
+  m.add_class::<PlanStream>()?;
+  m.add_class::<PanelPlanStream>()?;
   m.add_class::<LongShortKernel>()?;
   m.add_class::<CashConstraintKernel>()?;
   m.add_class::<NativeSession>()?;
