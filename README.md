@@ -253,3 +253,10 @@ cargo test
 When adding new algorithms with LLM assistance, provide [the function list](python/alpha/algo.md) as context. Use the skill [add_algo.md](.agent/skills/add_algo.md) for guided implementation.
 
 This project is a co-created by `Gemini` (through [Antigravity](https://antigravity.google/)) and `Claude` (from [tic-top](https://github.com/tic-top/py-alpha-lib)).
+
+## Framework adapters
+
+The optional [Nautilus adapter](adapters/nautilus/README.md) owns the factor
+Actor and public threshold/cross-sectional group strategies. It is an independent
+Cargo workspace; alpha core and Python bindings do not depend on Nautilus.
+Hosts own strategy catalogs, version freezes, execution configuration and UI.

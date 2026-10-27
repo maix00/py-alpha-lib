@@ -1,6 +1,8 @@
 [workspace]
 members = ["alpha-algo", "js-binding", "py-binding", "lua-binding", "mlang"]
 resolver = "3"
+# Framework adapters have independent dependencies and feature/version lifecycles.
+exclude = ["adapters/nautilus"]
 
 [workspace.package]
 version = "0.3.1"
