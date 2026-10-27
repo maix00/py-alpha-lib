@@ -50,3 +50,17 @@ __all__ = [
     "plan_blockers",
     "IncrementalFactorPlan",
 ]
+
+from .annotations import NodeAnnotation
+from .results import IntermediateIndex, IntermediateResults
+from .presentation import export_latex
+__all__ += ["NodeAnnotation", "IntermediateIndex", "IntermediateResults", "export_latex"]
+
+from .presentation import FormulaBundle, formula_bundle
+__all__ += ["FormulaBundle", "formula_bundle"]
+
+from .results import compile_factor_outputs
+__all__ += ["compile_factor_outputs"]
+
+from .presentation import LayerFormula
+__all__ += ["LayerFormula"]

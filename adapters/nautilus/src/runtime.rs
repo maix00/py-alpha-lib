@@ -45,9 +45,28 @@ pub struct FamilyRuntimeHandle {
     consumers: Vec<Arc<AtomicUsize>>,
     pub node_count: usize,
     rankings: Rc<RefCell<SharedRankings>>,
+    actor: std::rc::Weak<std::cell::UnsafeCell<dyn nautilus_common::actor::Actor>>,
 }
 
 impl FamilyRuntimeHandle {
+    /// Read one existing output from the Actor's single latest frame.
+    /// No computation, history buffer or per-publication copy is introduced.
+    pub fn latest_output(&self, output: usize) -> anyhow::Result<(i64, i64, Vec<f64>)> {
+        use nautilus_common::actor::registry::{get_actor, try_get_actor_unchecked};
+        let id = ustr::Ustr::from("shared-factors");
+        let installed = self.actor.upgrade().ok_or_else(|| anyhow::anyhow!("factor runtime released"))?;
+        let current = get_actor(&id).ok_or_else(|| anyhow::anyhow!("factor runtime unavailable"))?;
+        anyhow::ensure!(Rc::ptr_eq(&installed, &current), "factor runtime superseded by another run");
+        let actor = try_get_actor_unchecked::<FactorActor<crate::plan::FactorPlanEngine>>(&id)
+            .ok_or_else(|| anyhow::anyhow!("factor runtime type mismatch"))?;
+        let update = actor.last_update().ok_or_else(|| anyhow::anyhow!("no factor output yet"))?;
+        let width = update.products.len();
+        let start = output.checked_mul(width).ok_or_else(|| anyhow::anyhow!("output overflow"))?;
+        let end = start.checked_add(width).ok_or_else(|| anyhow::anyhow!("output overflow"))?;
+        let values = update.values.get(start..end).ok_or_else(|| anyhow::anyhow!("output outside plan"))?;
+        Ok((update.timestamp_ns, update.available_at_ns, values.to_vec()))
+    }
+
     pub fn raise_if_failed(&self) -> anyhow::Result<()> {
         self.outcome.ensure_success()
     }
@@ -178,7 +197,10 @@ pub fn install_family_runtime(
         engine.add_strategy(strategy)?;
     }
     engine.add_actor(actor)?;
+    let actor = nautilus_common::actor::registry::get_actor(&ustr::Ustr::from("shared-factors"))
+        .ok_or_else(|| anyhow::anyhow!("factor actor was not registered"))?;
     Ok(FamilyRuntimeHandle {
+        actor: Rc::downgrade(&actor),
         outcome: FactorReplayHandle { error },
         slices,
         consumers,

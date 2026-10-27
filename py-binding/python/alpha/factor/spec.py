@@ -64,6 +64,8 @@ def to_plan_spec(expressions: list[Any], *, products=None, categories=None) -> d
         elif isinstance(expr, ConstExpr):
             node = {"kind": "const", "value": float(expr.value)}
         elif isinstance(expr, RollingOp):
+            if not isinstance(expr.window, (int, np.integer)):
+                raise ValueError("Bind rolling window parameters before compiling a factor plan")
             child = build(expr.data)
             if child is None:
                 return None

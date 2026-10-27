@@ -7,6 +7,8 @@ Data is supplied through a small EvalContext / preloaded panel contract.
 
 from __future__ import annotations
 
+from .annotations import ExpressionAnnotations
+
 import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -28,7 +30,7 @@ class EvalContext:
     timeline: Any = None
 
 
-class FactorExpr:
+class FactorExpr(ExpressionAnnotations):
     _operands: tuple["FactorExpr", ...] = ()
 
     def evaluate(self, ctx: EvalContext) -> pd.DataFrame:
@@ -179,7 +181,7 @@ class ParamRef(FactorExpr):
 class RollingExpr(FactorExpr):
     def __init__(self, data: FactorExpr, window: int):
         self.data = data
-        self.window = int(window)
+        self.window = _to_expr(window) if isinstance(window, FactorExpr) or hasattr(window,"alias") else int(window)
 
     def semantics(self, *, min_periods: int | None = None,
                   nan_policy: NanPolicy = NanPolicy.PROPAGATE) -> "RollingExpr":
@@ -211,11 +213,11 @@ class RollingOp(FactorExpr):
                  semantics: WindowSemantics | None = None):
         self.op = op
         self.data = data
-        self.window = int(window)
+        self.window = _to_expr(window) if isinstance(window, FactorExpr) or hasattr(window,"alias") else int(window)
         self.semantics = semantics or WindowSemantics(self.window)
 
     def _structural_key(self):
-        return ("alpha.factor.RollingOp", self.op, self.window,
+        return ("alpha.factor.RollingOp", self.op, self.window._structural_key() if isinstance(self.window,FactorExpr) else self.window,
                 self.semantics.min_periods, self.semantics.nan_policy.value,
                 self.data._structural_key())
 

@@ -260,3 +260,33 @@ The optional [Nautilus adapter](adapters/nautilus/README.md) owns the factor
 Actor and public threshold/cross-sectional group strategies. It is an independent
 Cargo workspace; alpha core and Python bindings do not depend on Nautilus.
 Hosts own strategy catalogs, version freezes, execution configuration and UI.
+
+## Factor presentation and intermediate queries
+
+`alpha.factor` owns formula rendering and non-computational node annotations.
+`expr.as_intermediate("mean")` names an existing DAG node; it neither schedules a
+calculation nor retains its source Factor/Family object. Annotations do not enter
+semantic fingerprints or Rust CSE keys. Nested factor instances receive lexical
+namespaces, so two bindings of the same family have distinct query names.
+
+- `expr.to_latex()` exports parameter symbols; `expr.to_latex(values={...})`
+  substitutes parameters without evaluating observations.
+- `FactorFamily.get_factor(values={...}).formulas()` returns `FormulaBundle`
+  with symbolic/bound formulas and dependency-ordered `LayerFormula` entries.
+  Nested inner and outer parameters remain scoped independently.
+- `IncrementalFactorPlan({"signal": expr}, products, intermediates=("mean",))`
+  exposes `get_intermediate("mean")`. Selected outputs join the **same** Rust
+  Plan/CSE; they do not create another rolling state. Queries never evaluate.
+  The result store replaces its latest frame, not a growing publication history.
+- `IntermediateResults` can also borrow explicitly supplied batch outputs;
+  `intermediates="all"` is an explicit inspection/export request. The default
+  empty selection retains no intermediate output. Callers own batch lifetimes.
+- `compile_factor_outputs` exposes selected output slots to native adapters.
+  The Nautilus runtime `latest_output(slot)` reads the installed shared Actor's
+  latest frame and copies only the requested vector **when queried**.
+
+Hosts implement only `_presentation_fields()` to translate domain field types.
+`alpha.factor.serialized_formula.preview_expression` accepts source-free stored
+formula-template DTOs for editor previews (renderer version 7); it does not load
+family source, resolve remote dependencies, or execute factors. Browsers should
+render its LaTeX response, not maintain another formula substitution algorithm.
